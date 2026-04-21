@@ -1,0 +1,150 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    
+    // ============================================
+    // GDPR Assistant Collections
+    // ============================================
+    
+    // Cases collection - GDPR case management
+    match /cases/{caseId} {
+      allow read: if true;
+      allow create, update, delete: if request.auth != null;
+    }
+    
+    // Templates collection - Response templates
+    match /templates/{templateId} {
+      allow read: if true;
+      allow create, update, delete: if request.auth != null;
+    }
+    
+    // Template versions - version history
+    match /templateVersions/{versionId} {
+      allow read: if true;
+      allow create, update, delete: if request.auth != null;
+    }
+    
+    // Categories collection
+    match /categories/{categoryId} {
+      allow read: if true;
+      allow create, update, delete: if request.auth != null;
+    }
+    
+    // Requester types collection
+    match /requesterTypes/{typeId} {
+      allow read: if true;
+      allow create, update, delete: if request.auth != null;
+    }
+    
+    // ============================================
+    // REPORTING Collections (NEW!)
+    // ============================================
+    
+    // Weekly reports - GDPR compliance reporting
+    match /weeklyReports/{reportId} {
+      allow read: if true;  // Allow everyone to read reports
+      allow create, update, delete: if request.auth != null;
+    }
+    
+    // Activity log - detailed activity tracking
+    match /activityLog/{logId} {
+      allow read: if true;  // Allow everyone to read activity log
+      allow create, update, delete: if request.auth != null;
+    }
+    
+    // Training cases - agent training tracking
+    match /trainingCases/{caseId} {
+      allow read: if true;  // Allow everyone to read training cases
+      allow create, update, delete: if request.auth != null;
+    }
+    
+    // Market deep dive - detailed market analysis
+    match /marketDeepDive/{diveId} {
+      allow read: if true;  // Allow everyone to read market analysis
+      allow create, update, delete: if request.auth != null;
+    }
+    
+    // Market pulse - quick market updates
+    match /marketPulse/{pulseId} {
+      allow read: if true;
+      allow create, update, delete: if request.auth != null;
+    }
+    
+    // ============================================
+    // TRAINING Collections
+    // ============================================
+    
+    // Training requests collection
+    match /trainingRequests/{requestId} {
+      allow read: if true;
+      allow create, update, delete: if request.auth != null;
+    }
+    
+    // Training categories collection
+    match /trainingCategories/{categoryId} {
+      allow read: if true;
+      allow create, update, delete: if request.auth != null;
+    }
+    
+    // Training templates
+    match /trainingTemplates/{templateId} {
+      allow read: if true;
+      allow create, update, delete: if request.auth != null;
+    }
+    
+    // Agent progress tracking
+    match /agentProgress/{progressId} {
+      allow read: if true;
+      allow create, update, delete: if request.auth != null;
+    }
+    
+    // Agent performance tracking
+    match /agentPerformance/{performanceId} {
+      allow read: if true;
+      allow create, update, delete: if request.auth != null;
+    }
+    
+    // ============================================
+    // USER MANAGEMENT
+    // ============================================
+    
+    // Users collection - user profiles and roles
+    match /users/{userId} {
+      // Users can read their own profile
+      allow read: if request.auth != null && request.auth.token.email == userId;
+      
+      // Only admins can write user data
+      allow create, update, delete: if request.auth != null;
+    }
+    
+    // ============================================
+    // QUIZ/GAME Collections (Existing)
+    // ============================================
+    
+    // Quiz collection
+    match /quizzes/{quizId} {
+      allow get: if true;
+      allow list: if request.auth != null 
+                  && (resource.data.createdBy == request.auth.uid 
+                      || resource.data.privacy == 'public');
+      allow create: if request.auth != null 
+                    && request.resource.data.createdBy == request.auth.uid
+                    && request.resource.data.privacy in ['public', 'private'];
+      allow update: if request.auth != null && (
+        resource.data.createdBy == request.auth.uid ||
+        (resource.data.privacy == 'public' && request.resource.data.privacy == 'public')
+      );
+      allow delete: if request.auth != null 
+                    && resource.data.createdBy == request.auth.uid;
+    }
+    
+    // Game sessions
+    match /games/{gameId} {
+      allow read: if true;
+      allow create: if request.auth != null;
+      allow update: if true;
+      allow delete: if request.auth != null;
+    }
+  }
+}

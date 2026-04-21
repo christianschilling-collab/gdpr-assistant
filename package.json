@@ -1,0 +1,45 @@
+{
+  "name": "gdpr-assistant-cursor",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "next lint",
+    "test:connections": "tsx scripts/test-connections.ts",
+    "test:firebase": "tsx scripts/test-firebase-only.ts",
+    "test:rules": "tsx scripts/test-firestore-rules.ts",
+    "configure:firebase": "tsx scripts/configure-firebase.ts",
+    "init-data": "tsx scripts/init-data.ts",
+    "cleanup-duplicates": "tsx scripts/cleanup-duplicates.ts",
+    "init-training": "tsx scripts/init-training-categories.ts"
+  },
+  "dependencies": {
+    "@google/generative-ai": "^0.24.1",
+    "@heroicons/react": "^2.2.0",
+    "firebase": "^11.1.0",
+    "firebase-admin": "^13.0.1",
+    "jspdf": "^4.2.0",
+    "jspdf-autotable": "^5.0.7",
+    "next": "^15.1.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "react-quill": "^2.0.0",
+    "recharts": "^3.7.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20",
+    "@types/react": "^18",
+    "@types/react-dom": "^18",
+    "autoprefixer": "^10.4.24",
+    "dotenv": "^17.3.1",
+    "eslint": "^8",
+    "eslint-config-next": "^15.1.0",
+    "firebase-tools": "^15.11.0",
+    "postcss": "^8.5.6",
+    "tailwindcss": "^3.4.1",
+    "tsx": "^4.21.0",
+    "typescript": "^5"
+  }
+}

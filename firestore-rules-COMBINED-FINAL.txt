@@ -1,0 +1,275 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    
+    // ============================================
+    // SOLVER RUNS (Other Team - DO NOT MODIFY)
+    // ============================================
+    // Solver runs — metadata + adjustments
+    // Authenticated HelloFresh users can read and update adjustments.
+    // Full result data lives in Firebase Storage (not Firestore).
+    match /solverRuns/{runId} {
+      allow read, write: if request.auth != null
+                         && request.auth.token.email.matches('.*@hellofresh\\.com$');
+    }
+    
+    // ============================================
+    // AI TRAILBLAZERS DASHBOARD
+    // Owner: Christian Schilling (christian.schilling@hellofresh.de)
+    // Last Updated: 2026-03-03
+    // ============================================
+    
+    // Helper function: Check if user email is authorized
+    function isAITrailblazersUser() {
+      return request.auth != null && (
+        // Admin
+        request.auth.token.email == 'christian.schilling@hellofresh.de' ||
+        // Participants
+        request.auth.token.email == 'jessica@hellofresh.nl' ||
+        request.auth.token.email == 'kirsten@hellofresh.nl' ||
+        request.auth.token.email == 'vanessa.dimeglio@hellofresh.de' ||
+        request.auth.token.email == 'sni@hellofresh.se' ||
+        request.auth.token.email == 'myrtille@hellofresh.fr' ||
+        request.auth.token.email == 'sonny.leven@hellofresh.se'
+      );
+    }
+
+    // Helper function: Check if user is admin
+    function isAITrailblazersAdmin() {
+      return request.auth != null && 
+             request.auth.token.email == 'christian.schilling@hellofresh.de';
+    }
+
+    // Helper function: Get participant ID from email
+    function getParticipantIdFromEmail() {
+      let email = request.auth.token.email;
+      return email == 'jessica@hellofresh.nl' ? 'P001' :
+             email == 'kirsten@hellofresh.nl' ? 'P002' :
+             email == 'vanessa.dimeglio@hellofresh.de' ? 'P003' :
+             email == 'sni@hellofresh.se' ? 'P004' :
+             email == 'myrtille@hellofresh.fr' ? 'P005' :
+             email == 'sonny.leven@hellofresh.se' ? 'P006' : '';
+    }
+
+    // Main dashboard document
+    match /dashboard/main {
+      allow read: if isAITrailblazersUser();
+      allow write: if isAITrailblazersAdmin();
+      allow update: if isAITrailblazersUser(); 
+      
+      // Participants subcollection
+      match /participants/{participantId} {
+        allow read: if isAITrailblazersUser();
+        allow write: if isAITrailblazersAdmin();
+      }
+      
+      // Proficiency subcollection
+      match /proficiency/{proficiencyId} {
+        allow read: if isAITrailblazersUser();
+        allow create, update, delete: if isAITrailblazersAdmin();
+        allow create, update: if isAITrailblazersUser() && 
+                                 request.resource.data.participantId == getParticipantIdFromEmail();
+      }
+      
+      // Resources subcollection
+      match /resources/{resourceId} {
+        allow read: if isAITrailblazersUser();
+        allow write: if isAITrailblazersAdmin();
+        allow create: if isAITrailblazersUser() && 
+                         request.resource.data.addedById == getParticipantIdFromEmail();
+      }
+      
+      // Workshops subcollection
+      match /workshops/{workshopId} {
+        allow read: if isAITrailblazersUser();
+        allow write: if isAITrailblazersAdmin();
+      }
+    }
+    
+    // ============================================
+    // GDPR ASSISTANT (Development/Test Environment)
+    // ============================================
+    // Owner: Christian Schilling (christian.schilling@hellofresh.de)
+    // 
+    // Current Status: DEVELOPMENT MODE with TEST DATA
+    // - GDPR Assistant app currently uses test/demo data only
+    // - No production customer data is stored in Firestore
+    // - AI Trailblazers app uses Google Authentication (see rules above)
+    // 
+    // Company Policy Compliance:
+    // If stricter security rules are required per company policy,
+    // please contact christian.schilling@hellofresh.de
+    // Happy to implement authentication requirements or IP restrictions.
+    // 
+    // Note: These rules are intentionally permissive for development.
+    // Production deployment will require authentication (already implemented in frontend).
+    // ============================================
+    
+    // Market Deep Dive Reports
+    match /marketDeepDive/{reportId} {
+      allow read: if request.auth != null;
+      allow write: if request.auth != null;
+    }
+    
+    // Training Cases collection - Monthly agent error tracking
+    match /trainingCases/{caseId} {
+      allow read, write: if true;
+    }
+    
+    // Weekly Reports collection
+    match /weeklyReports/{reportId} {
+      allow read, write: if true;
+    }
+
+    // Activity Log collection
+    match /activityLog/{logId} {
+      allow read, write: if true;
+    }
+    
+    // Cases collection - GDPR case management
+    match /cases/{caseId} {
+      allow read, write: if true;
+    }
+    
+    // Templates collection - Response templates
+    match /templates/{templateId} {
+      allow read, write: if true;
+    }
+    
+    // Template versions collection - Track template version history
+    match /templateVersions/{versionId} {
+      allow read, write: if true;
+    }
+    
+    // Categories collection - GDPR request categories (configurable)
+    match /categories/{categoryId} {
+      allow read, write: if true;
+    }
+    
+    // Requester Types collection - Types of requesters (configurable)
+    match /requesterTypes/{typeId} {
+      allow read, write: if true;
+    }
+    
+    // Training requests collection - Track training emails sent to agents
+    match /trainingRequests/{requestId} {
+      allow read, write: if true;
+    }
+    
+    // Training categories collection - Manage training categories
+    match /trainingCategories/{categoryId} {
+      allow read, write: if true;
+    }
+    
+    // Agent progress collection - Track training completion per agent
+    match /agentProgress/{agentId} {
+      allow read, write: if true;
+    }
+    
+    // Training completions collection - Detailed completion records
+    match /trainingCompletions/{completionId} {
+      allow read, write: if true;
+    }
+    
+    // Market pulse checks collection - Weekly questionnaire data
+    match /marketPulseChecks/{pulseId} {
+      allow read, write: if true;
+    }
+    
+    // Quiz collections - Training quizzes
+    match /quizzes/{quizId} {
+      allow read, write: if true;
+    }
+    
+    // Quiz attempts collection - Track quiz completions
+    match /quizAttempts/{attemptId} {
+      allow read, write: if true;
+    }
+    
+    // Quiz certificates collection - Certificates for passed quizzes
+    match /quizCertificates/{certId} {
+      allow read, write: if true;
+    }
+    
+    // Training templates collection - Pre-built and custom training templates
+    match /trainingTemplates/{templateId} {
+      allow read, write: if true;
+    }
+    
+    // Case history collection - Track status changes
+    match /caseHistory/{historyId} {
+      allow read, write: if true;
+    }
+    
+    // Case activity collection - Track all case activities
+    match /caseActivity/{activityId} {
+      allow read, write: if true;
+    }
+    
+    // Training feedback collection
+    match /trainingFeedback/{feedbackId} {
+      allow read, write: if true;
+    }
+    
+    // Case feedback collection
+    match /caseFeedback/{feedbackId} {
+      allow read, write: if true;
+    }
+    
+    // Agent performance collection
+    match /agentPerformance/{performanceId} {
+      allow read, write: if true;
+    }
+    
+    // Game sessions - anyone can read/write for real-time gameplay
+    match /games/{gameId} {
+      allow read, write: if true;
+    }
+    
+    // ============================================
+    // QUIZ/GAME Collections (Shared Resources)
+    // ============================================
+    
+    // Quiz collection - privacy-based access control
+    match /quizzes/{quizId} {
+      // Anyone can read a single quiz (needed for gameplay - players aren't authenticated)
+      allow get: if true;
+      
+      // Authenticated users can list/query quizzes
+      // The query will only return documents that match these conditions
+      allow list: if request.auth != null 
+                  && (resource.data.createdBy == request.auth.uid 
+                      || resource.data.privacy == 'public');
+      
+      // Create: Authenticated users only, must set createdBy to their uid
+      allow create: if request.auth != null 
+                    && request.resource.data.createdBy == request.auth.uid
+                    && request.resource.data.privacy in ['public', 'private'];
+      
+      // Update: Creator can always update, others can update public quizzes
+      allow update: if request.auth != null && (
+        resource.data.createdBy == request.auth.uid ||
+        (resource.data.privacy == 'public' && request.resource.data.privacy == 'public')
+      );
+      
+      // Delete: Only the creator can delete
+      allow delete: if request.auth != null 
+                    && resource.data.createdBy == request.auth.uid;
+    }
+    
+    // Game sessions - anyone can read/write for real-time gameplay
+    match /games/{gameId} {
+      // Allow read access to all (players need to see game state)
+      allow read: if true;
+      
+      // Only authenticated hosts can create games
+      allow create: if request.auth != null;
+      
+      // Allow updates for game progression and player joins
+      allow update: if true;
+      
+      // Only the host can delete games
+      allow delete: if request.auth != null;
+    }
+  }
+}

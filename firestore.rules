@@ -1,0 +1,276 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ============================================
+    // team-cc-gdpr — keep in sync with:
+    // ai-enablement-dashboard/firestore.rules
+    // ============================================
+
+    function isAuthenticated() {
+      // DEVELOPMENT MODE: Allow unauthenticated access for testing
+      // TODO: Change back to "request.auth != null" in production!
+      return true;
+    }
+
+    function userEmail() {
+      // DEVELOPMENT MODE: Return dummy email for unauthenticated requests
+      return request.auth != null ? request.auth.token.email : 'dev@test.com';
+    }
+
+    function isPlatformAdmin() {
+      // DEVELOPMENT MODE: Always allow for testing
+      return true;
+    }
+
+    function isClusterLead(clusterId) {
+      return isAuthenticated() &&
+             exists(/databases/$(database)/documents/aitrailblazers_clusters/$(clusterId)) &&
+             get(/databases/$(database)/documents/aitrailblazers_clusters/$(clusterId)).data.clusterLead == userEmail();
+    }
+
+    function isTeamLead(clusterId, teamId) {
+      return isAuthenticated() &&
+             exists(/databases/$(database)/documents/aitrailblazers_clusters/$(clusterId)/teams/$(teamId)) &&
+             get(/databases/$(database)/documents/aitrailblazers_clusters/$(clusterId)/teams/$(teamId)).data.teamLead == userEmail();
+    }
+
+    function canAccessCluster(clusterId) {
+      return isPlatformAdmin() || isClusterLead(clusterId);
+    }
+
+    function canAccessTeam(clusterId, teamId) {
+      return isPlatformAdmin() || isClusterLead(clusterId) || isTeamLead(clusterId, teamId);
+    }
+
+    // ============================================
+    // AI TRAILBLAZERS DASHBOARD (team-cc-gdpr)
+    // ============================================
+
+    match /aitrailblazers_userProfiles/{email} {
+      allow read: if isAuthenticated();
+      allow write: if isPlatformAdmin() || userEmail() == email;
+    }
+
+    match /aitrailblazers_platformAdmins/{email} {
+      allow read: if isAuthenticated();
+      allow write: if isPlatformAdmin();
+    }
+
+    match /aitrailblazers_clusters/{clusterId} {
+      allow read: if isAuthenticated();
+      allow write: if canAccessCluster(clusterId);
+
+      match /teams/{teamId} {
+        allow read: if isAuthenticated();
+        allow write: if canAccessTeam(clusterId, teamId);
+
+        match /proficiency/{proficiencyId} {
+          allow read: if isAuthenticated();
+          allow write: if canAccessTeam(clusterId, teamId);
+        }
+
+        match /workshops/{workshopId} {
+          allow read: if isAuthenticated();
+          allow write: if canAccessTeam(clusterId, teamId);
+        }
+
+        match /resources/{resourceId} {
+          allow read: if isAuthenticated();
+          allow write: if canAccessTeam(clusterId, teamId);
+        }
+
+        match /members/{memberId} {
+          allow read: if isAuthenticated();
+          allow write: if canAccessTeam(clusterId, teamId);
+        }
+      }
+    }
+
+    match /aitrailblazers_globalResources/{resourceId} {
+      allow read: if isAuthenticated();
+      allow write: if isPlatformAdmin();
+    }
+
+    match /aitrailblazers_aiProjects/{projectId} {
+      allow read, write: if isAuthenticated();
+    }
+
+    // ============================================
+    // LEGACY AI ENABLEMENT (dashboard)
+    // ============================================
+
+    match /dashboard/main {
+      allow read: if isAuthenticated();
+      allow write: if isPlatformAdmin();
+
+      match /participants/{participantId} {
+        allow read: if isAuthenticated();
+        allow write: if isPlatformAdmin();
+      }
+
+      match /proficiency/{proficiencyId} {
+        allow read: if isAuthenticated();
+        allow write: if isPlatformAdmin();
+      }
+
+      match /resources/{resourceId} {
+        allow read: if isAuthenticated();
+        allow write: if isPlatformAdmin();
+      }
+
+      match /workshops/{workshopId} {
+        allow read: if isAuthenticated();
+        allow write: if isPlatformAdmin();
+      }
+    }
+
+    // ============================================
+    // GDPR ASSISTANT (unprefixed collections)
+    // Browser SDK: request.auth is set after Google sign-in.
+    // Use request.auth != null (not the dev isAuthenticated() helper above).
+    // ============================================
+
+    function gdprSignedIn() {
+      return request.auth != null;
+    }
+
+    match /users/{userId} {
+      allow read, write: if gdprSignedIn();
+    }
+
+    match /platformAdmins/{email} {
+      allow read, write: if gdprSignedIn();
+    }
+
+    match /cases/{caseId} {
+      allow read, write: if gdprSignedIn();
+    }
+
+    match /templates/{templateId} {
+      allow read, write: if gdprSignedIn();
+    }
+
+    match /categories/{categoryId} {
+      allow read, write: if gdprSignedIn();
+    }
+
+    match /requesterTypes/{typeId} {
+      allow read, write: if gdprSignedIn();
+    }
+
+    match /workflows/{workflowId} {
+      allow read, write: if gdprSignedIn();
+    }
+
+    match /workflowMappings/{mappingId} {
+      allow read, write: if gdprSignedIn();
+    }
+
+    match /customWorkflowTemplates/{id} {
+      allow read, write: if gdprSignedIn();
+    }
+
+    match /templateVersions/{id} {
+      allow read, write: if gdprSignedIn();
+    }
+
+    match /trainingTemplates/{id} {
+      allow read, write: if gdprSignedIn();
+    }
+
+    match /trainingCases/{caseId} {
+      allow read, write: if gdprSignedIn();
+    }
+
+    match /trainingCategories/{id} {
+      allow read, write: if gdprSignedIn();
+    }
+
+    match /agentTraining/{recordId} {
+      allow read, write: if gdprSignedIn();
+    }
+
+    match /weeklyReports/{reportId} {
+      allow read, write: if gdprSignedIn();
+    }
+
+    match /activityLog/{logId} {
+      allow read, write: if gdprSignedIn();
+    }
+
+    match /marketDeepDive/{month} {
+      allow read, write: if gdprSignedIn();
+    }
+
+    match /marketPulseChecks/{id} {
+      allow read, write: if gdprSignedIn();
+    }
+
+    match /escalations/{id} {
+      allow read, write: if gdprSignedIn();
+    }
+
+    match /escalationAuditLog/{id} {
+      allow read, write: if gdprSignedIn();
+    }
+
+    match /incidents/{id} {
+      allow read, write: if gdprSignedIn();
+    }
+
+    match /incidentTasks/{id} {
+      allow read, write: if gdprSignedIn();
+    }
+
+    match /incidentAuditLog/{id} {
+      allow read, write: if gdprSignedIn();
+    }
+
+    match /incidentTaskTemplates/{id} {
+      allow read, write: if gdprSignedIn();
+    }
+
+    match /caseHistory/{id} {
+      allow read, write: if gdprSignedIn();
+    }
+
+    match /caseActivity/{id} {
+      allow read, write: if gdprSignedIn();
+    }
+
+    match /quizzes/{id} {
+      allow read, write: if gdprSignedIn();
+    }
+
+    match /quizAttempts/{id} {
+      allow read, write: if gdprSignedIn();
+    }
+
+    match /quizCertificates/{id} {
+      allow read, write: if gdprSignedIn();
+    }
+
+    match /trainingFeedback/{id} {
+      allow read, write: if gdprSignedIn();
+    }
+
+    match /caseFeedback/{id} {
+      allow read, write: if gdprSignedIn();
+    }
+
+    // GDPR "clusters" (org structure) — not aitrailblazers_clusters
+    match /clusters/{clusterId} {
+      allow read, write: if gdprSignedIn();
+
+      match /teams/{teamId} {
+        allow read, write: if gdprSignedIn();
+      }
+    }
+
+    // Default: deny all other access
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

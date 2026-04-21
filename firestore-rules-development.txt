@@ -1,0 +1,137 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    
+    // ============================================
+    // GDPR Assistant Collections (Development Mode)
+    // ⚠️ Open access for development - tighten for production
+    // ============================================
+    
+    // Cases collection - GDPR case management
+    match /cases/{caseId} {
+      allow read, write: if true;
+    }
+    
+    // Templates collection - Response templates
+    match /templates/{templateId} {
+      allow read, write: if true;
+    }
+    
+    // Template versions collection - Track template version history
+    match /templateVersions/{versionId} {
+      allow read, write: if true;
+    }
+    
+    // Categories collection - GDPR request categories (configurable)
+    match /categories/{categoryId} {
+      allow read, write: if true;
+    }
+    
+    // Requester Types collection - Types of requesters (configurable)
+    match /requesterTypes/{typeId} {
+      allow read, write: if true;
+    }
+    
+    // Training requests collection - Track training emails sent to agents
+    match /trainingRequests/{requestId} {
+      allow read, write: if true;
+    }
+    
+    // Training categories collection - Manage training categories
+    match /trainingCategories/{categoryId} {
+      allow read, write: if true;
+    }
+    
+    // Agent progress collection - Track training completion per agent
+    match /agentProgress/{agentId} {
+      allow read, write: if true;
+    }
+    
+    // Training completions collection - Detailed completion records
+    match /trainingCompletions/{completionId} {
+      allow read, write: if true;
+    }
+    
+    // Market pulse checks collection - Weekly questionnaire data
+    match /marketPulseChecks/{pulseId} {
+      allow read, write: if true;
+    }
+    
+    // Quiz collections - Training quizzes
+    match /quizzes/{quizId} {
+      allow read, write: if true;
+    }
+    
+    // Quiz attempts collection - Track quiz completions
+    match /quizAttempts/{attemptId} {
+      allow read, write: if true;
+    }
+    
+    // Quiz certificates collection - Certificates for passed quizzes
+    match /quizCertificates/{certId} {
+      allow read, write: if true;
+    }
+    
+    // Training templates collection - Pre-built and custom training templates
+    match /trainingTemplates/{templateId} {
+      allow read, write: if true;
+    }
+    
+    // Case history collection - Track status changes
+    match /caseHistory/{historyId} {
+      allow read, write: if true;
+    }
+    
+    // Case activity collection - Track all case activities
+    match /caseActivity/{activityId} {
+      allow read, write: if true;
+    }
+    
+    // Training feedback collection
+    match /trainingFeedback/{feedbackId} {
+      allow read, write: if true;
+    }
+    
+    // Case feedback collection
+    match /caseFeedback/{feedbackId} {
+      allow read, write: if true;
+    }
+    
+    // Agent performance collection
+    match /agentPerformance/{performanceId} {
+      allow read, write: if true;
+    }
+    
+    // Agent training records collection - Track agent training assignments
+    match /agentTraining/{trainingId} {
+      allow read, write: if true;
+    }
+    
+    // Weekly Reports collection
+    match /weeklyReports/{reportId} {
+      allow read, write: if true;
+    }
+
+    // Activity Log collection
+    match /activityLog/{logId} {
+      allow read, write: if true;
+    }
+    
+    // Training Cases collection - Monthly agent error tracking
+    match /trainingCases/{caseId} {
+      allow read, write: if true;
+    }
+    
+    // Users collection - User profiles and roles
+    match /users/{userId} {
+      allow read: if true; // Everyone can read user profiles
+      allow write: if true; // In dev mode, allow all writes (tighten in production)
+    }
+    
+    // Game sessions - anyone can read/write for real-time gameplay
+    match /games/{gameId} {
+      allow read, write: if true;
+    }
+  }
+}
