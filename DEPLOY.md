@@ -20,9 +20,35 @@ Deshalb funktioniert **kein** reines **`output: 'export'`** + statischer Ordner 
 ## Option B — **Firebase App Hosting** (Google, Next.js mit Server)
 
 Für volle Next-Funktion inkl. API-Routes auf Google-Infrastruktur:  
-[Firebase App Hosting](https://firebase.google.com/docs/app-hosting) (eigenes `apphosting.yaml`, anderes Deployment als klassisches `public: out`).
+[Firebase App Hosting](https://firebase.google.com/docs/app-hosting) — in diesem Repo: **`apphosting.yaml`**, **`firebase.json`** → `apphosting` (Backend-ID **`gdpr-assistant`**).
 
-Die vorhandene **`firebase.json`** mit `"public": "out"` ist für **statischen Export** gedacht — mit der aktuellen App bitte **nicht** mehr so deployen, solange `/api/*` genutzt wird.
+**Voraussetzungen:** Projekt **Blaze**, Firebase CLI **≥ 14.4** (`firebase-tools` im Repo), einmalig Backend anlegen (ID muss zu `backendId` in `firebase.json` passen):
+
+```bash
+firebase login
+firebase apphosting:backends:create --project team-cc-gdpr
+# Backend-ID z. B. "gdpr-assistant" wählen (oder firebase.json anpassen).
+```
+
+Oder: **`firebase init apphosting`** und dieselben Einstellungen wählen (überschreibt/ergänzt `firebase.json` und `apphosting.yaml` — ggf. unsere `apphosting.yaml` danach vergleichen).
+
+**Umgebungsvariablen** im Console-Pfad *App Hosting → Backend → Environment* (wie `.env.local.example`): `GEMINI_API_KEY`, alle `NEXT_PUBLIC_FIREBASE_*`, optional Server-Keys falls nötig. **Authentication → Authorized domains:** die App-Hosting-URL ergänzen.
+
+**Deploy (Regeln + App):**
+
+```bash
+npm run deploy:firebase
+```
+
+Nur App-Hosting-Rollout:
+
+```bash
+npm run deploy:firebase:app
+```
+
+[Deploy aus lokaler Quelle](https://firebase.google.com/docs/app-hosting/alt-deploy) entspricht dem, was die CLI hier macht (Upload, Cloud Build, Cloud Run).
+
+Klassisches Hosting mit **`"public": "out"`** ist aus **`firebase.json`** entfernt — mit `/api/*` nicht sinnvoll ohne API-Auslagerung.
 
 ---
 

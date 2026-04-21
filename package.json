@@ -13,7 +13,10 @@
     "configure:firebase": "tsx scripts/configure-firebase.ts",
     "init-data": "tsx scripts/init-data.ts",
     "cleanup-duplicates": "tsx scripts/cleanup-duplicates.ts",
-    "init-training": "tsx scripts/init-training-categories.ts"
+    "init-training": "tsx scripts/init-training-categories.ts",
+    "deploy:firebase": "firebase deploy --only firestore,apphosting:gdpr-assistant",
+    "deploy:firebase:app": "firebase deploy --only apphosting:gdpr-assistant",
+    "deploy:firebase:firestore": "firebase deploy --only firestore"
   },
   "dependencies": {
     "@google/generative-ai": "^0.24.1",

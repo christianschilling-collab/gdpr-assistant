@@ -5,7 +5,7 @@ This repo is configured for the **same Firebase project** as the AI Enablement d
 ## What was changed in this repo
 
 - **`.firebaserc`** — default project `team-cc-gdpr`
-- **`firebase.json`** — Hosting site **`gdpr-assistant-cc`**, `trailingSlash: true` (matches `next.config.js`), Firestore rules + indexes wired
+- **`firebase.json`** — **App Hosting** backend **`gdpr-assistant`** (`rootDir: "."`), Firestore rules + indexes; kein statisches `hosting.public: out` mehr
 - **`firestore.rules`** — AI Trailblazers (`aitrailblazers_*`, legacy `dashboard`) + GDPR collections + default deny
 - **`.env.local.example`** — points at `team-cc-gdpr` (fill from Firebase Console)
 

@@ -1,0 +1,11 @@
+# Firebase App Hosting (Next.js + /api/* on Cloud Run).
+# Env vars: Console → App Hosting → Backend → Environment (overrides this file).
+# Copy keys from .env.local.example (NEXT_PUBLIC_*, GEMINI_API_KEY, optional FIREBASE_SERVICE_ACCOUNT).
+# Blaze plan required. https://firebase.google.com/docs/app-hosting/get-started
+
+runConfig:
+  cpu: 1
+  memoryMiB: 1024
+  concurrency: 80
+  minInstances: 0
+  maxInstances: 10
