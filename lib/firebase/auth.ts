@@ -8,7 +8,9 @@ import { getApp } from './config';
 import {
   getAuth,
   GoogleAuthProvider,
+  getRedirectResult,
   signInWithPopup,
+  signInWithRedirect,
   signOut,
   onAuthStateChanged,
   User,
@@ -48,6 +50,15 @@ export async function signInWithGoogle(): Promise<User | null> {
     return result.user;
   } catch (error: any) {
     console.error('Error signing in with Google:', error);
+    const code = error?.code as string | undefined;
+    // Pop-ups are often blocked on production origins; full-page redirect works reliably.
+    if (
+      code === 'auth/popup-blocked' ||
+      code === 'auth/operation-not-supported-in-this-environment'
+    ) {
+      await signInWithRedirect(auth, provider);
+      return null;
+    }
     throw error;
   }
 }
@@ -63,6 +74,17 @@ export async function signOutUser(): Promise<void> {
   } catch (error: any) {
     console.error('Error signing out:', error);
     throw error;
+  }
+}
+
+/** Call once on app load so Google sign-in via `signInWithRedirect` can complete. */
+export async function consumeAuthRedirectResult(): Promise<void> {
+  const auth = getAuthInstance();
+  if (!auth) return;
+  try {
+    await getRedirectResult(auth);
+  } catch {
+    // No pending redirect or benign failure
   }
 }
 

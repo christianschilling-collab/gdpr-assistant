@@ -2,7 +2,7 @@
 
 import React, { createContext, useContext, useEffect, useState } from 'react';
 import { User } from 'firebase/auth';
-import { onAuthChange, getAuthInstance } from '@/lib/firebase/auth';
+import { onAuthChange, getAuthInstance, consumeAuthRedirectResult } from '@/lib/firebase/auth';
 import { getUserProfile, createOrUpdateUserProfile, UserProfile, UserRole } from '@/lib/firebase/users';
 
 interface AuthContextType {
@@ -111,17 +111,26 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       return;
     }
 
-    const unsubscribe = onAuthChange((firebaseUser) => {
-      setUser(firebaseUser);
-      if (firebaseUser) {
-        loadUserProfile(firebaseUser).finally(() => setLoading(false));
-      } else {
-        setUserProfile(null);
-        setLoading(false);
-      }
+    let cancelled = false;
+    let unsubscribe: (() => void) | undefined;
+
+    void consumeAuthRedirectResult().finally(() => {
+      if (cancelled) return;
+      unsubscribe = onAuthChange((firebaseUser) => {
+        setUser(firebaseUser);
+        if (firebaseUser) {
+          loadUserProfile(firebaseUser).finally(() => setLoading(false));
+        } else {
+          setUserProfile(null);
+          setLoading(false);
+        }
+      });
     });
 
-    return () => unsubscribe();
+    return () => {
+      cancelled = true;
+      unsubscribe?.();
+    };
   }, []);
 
   return (
