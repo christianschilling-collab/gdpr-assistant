@@ -51,7 +51,7 @@ const FEATURES = [
     number: '06',
     title: 'ADMIN',
     headline: 'Settings, templates, and user management.',
-    description: 'The Admin area is for team leads and administrators. From here you can manage case categories, update response templates for each request type, configure workflow steps, manage user access and roles, and import weekly market reports from CSV. Most changes take effect immediately for all users.',
+    description: 'The Admin area is for team leads and administrators. From here you can manage case categories, update response templates for each request type, configure workflow steps, manage user access and roles, and configure reporting. Weekly market data is submitted by teams via the Reporting web form. Most changes take effect immediately for all users.',
     image: 'admin.png',
   },
 ];

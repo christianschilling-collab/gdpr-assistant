@@ -1,5 +1,39 @@
 import { Timestamp } from 'firebase/firestore';
 
+/** Parse Firestore Timestamp, Date, millis number, or ISO string without throwing. */
+function readFirestoreDate(raw: unknown, fallback: Date = new Date(0)): Date {
+  if (raw == null) return fallback;
+  if (raw instanceof Date) {
+    const t = raw.getTime();
+    return Number.isFinite(t) ? raw : fallback;
+  }
+  if (raw instanceof Timestamp) {
+    try {
+      const d = raw.toDate();
+      return Number.isFinite(d.getTime()) ? d : fallback;
+    } catch {
+      return fallback;
+    }
+  }
+  if (typeof raw === 'number' && Number.isFinite(raw)) {
+    const d = new Date(raw);
+    return Number.isFinite(d.getTime()) ? d : fallback;
+  }
+  if (typeof raw === 'string' && raw.trim()) {
+    const d = new Date(raw);
+    return Number.isFinite(d.getTime()) ? d : fallback;
+  }
+  if (typeof (raw as { toDate?: () => Date }).toDate === 'function') {
+    try {
+      const d = (raw as { toDate: () => Date }).toDate();
+      if (d instanceof Date && Number.isFinite(d.getTime())) return d;
+    } catch {
+      /* ignore */
+    }
+  }
+  return fallback;
+}
+
 /**
  * Escalation Status
  */
@@ -130,7 +164,9 @@ export interface Escalation {
   
   // Status-specific fields
   waitingForResponseFrom?: string;  // Used when status is "Pending External Response"
-  
+  /** Trackboard / ownership — persisted in Firestore when set */
+  assignedTo?: string;
+
   // Customer Info
   cidOrEmail: string;             // Customer ID or Email
   
@@ -163,23 +199,28 @@ export interface Escalation {
  * Firestore timestamp conversion helpers
  */
 export function escalationFromFirestore(data: any): Escalation {
+  const now = new Date();
   return {
     ...data,
-    createdAt: data.createdAt?.toDate() || new Date(),
-    updatedAt: data.updatedAt?.toDate() || new Date(),
-    deadlineFirstReply: data.deadlineFirstReply?.toDate() || new Date(),
+    summary: typeof data.summary === 'string' ? data.summary : '',
+    relatedCases: Array.isArray(data.relatedCases)
+      ? data.relatedCases.map((x: unknown) => String(x))
+      : [],
+    createdAt: readFirestoreDate(data.createdAt, now),
+    updatedAt: readFirestoreDate(data.updatedAt, now),
+    deadlineFirstReply: readFirestoreDate(data.deadlineFirstReply, now),
     links: (data.links || []).map((link: any) => ({
       ...link,
-      addedAt: link.addedAt?.toDate() || new Date(),
+      addedAt: readFirestoreDate(link.addedAt, now),
     })),
     communications: (data.communications || []).map((comm: any) => ({
       ...comm,
-      timestamp: comm.timestamp?.toDate() || new Date(),
+      timestamp: readFirestoreDate(comm.timestamp, now),
     })),
     actionItems: (data.actionItems || []).map((item: any) => ({
       ...item,
-      createdAt: item.createdAt?.toDate() || new Date(),
-      completedAt: item.completedAt?.toDate(),
+      createdAt: readFirestoreDate(item.createdAt, now),
+      completedAt: item.completedAt != null ? readFirestoreDate(item.completedAt, now) : undefined,
     })),
   };
 }

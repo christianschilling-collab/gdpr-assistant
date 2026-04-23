@@ -169,6 +169,7 @@ export async function updateEscalationField<K extends keyof Escalation>(
     cidOrEmail: 'CID/Email',
     jiraReference: 'Jira Reference',
     purecloudInteractionLink: 'Purecloud Link',
+    assignedTo: 'Assigned agent',
   };
   
   const displayName = fieldDisplayNames[String(fieldName)] || String(fieldName);

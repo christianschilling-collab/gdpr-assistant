@@ -211,11 +211,18 @@ export default function AdminDashboardPage() {
       color: 'red',
     },
     {
-      title: 'Weekly Reports Upload',
-      description: 'Import weekly market reports from CSV',
+      title: 'Weekly market report',
+      description: 'Submit numbers and structured activity notes per market and week',
       icon: 'upload',
-      href: '/reporting/upload',
+      href: '/reporting/submit',
       color: 'teal',
+    },
+    {
+      title: 'Edit reporting data',
+      description: 'Correct weekly numbers, risk text, activity rows, and individual log lines',
+      icon: 'clipboard',
+      href: '/admin/reporting/edit',
+      color: 'gray',
     },
     {
       title: 'Market Deep Dive',

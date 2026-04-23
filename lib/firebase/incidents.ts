@@ -328,6 +328,7 @@ export async function updateIncidentField<K extends keyof Incident>(
     containmentMeasures: 'Containment Measures',
     resolutionDescription: 'Resolution Description',
     preventiveMeasures: 'Preventive Measures',
+    assignedTo: 'Assigned agent',
   };
   
   const displayName = fieldDisplayNames[String(fieldName)] || String(fieldName);

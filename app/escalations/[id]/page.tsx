@@ -24,6 +24,10 @@ import {
   CommunicationEntry,
 } from '@/lib/types/escalations';
 import { useToast } from '@/lib/contexts/ToastContext';
+import {
+  resolveAssigneeInputToStoredEmail,
+  BOARD_UNASSIGNED,
+} from '@/lib/board/assigneeEmailDirectory';
 import { useAuth } from '@/lib/contexts/AuthContext';
 import {
   DocumentTextIcon,
@@ -65,6 +69,8 @@ export default function EscalationDetailPage() {
   const [auditLog, setAuditLog] = useState<EscalationAuditLog[]>([]);
   const [loading, setLoading] = useState(true);
   const [updating, setUpdating] = useState(false);
+  const [assignedToDraft, setAssignedToDraft] = useState('');
+  const [savingAssignedTo, setSavingAssignedTo] = useState(false);
 
   // Edit states
   const [editingField, setEditingField] = useState<string | null>(null);
@@ -127,6 +133,7 @@ export default function EscalationDetailPage() {
         draftAnswer: escalationData.draftAnswer || '',
         waitingForResponseFrom: escalationData.waitingForResponseFrom || '',
       });
+      setAssignedToDraft((escalationData.assignedTo || '').trim());
     } catch (error) {
       console.error('Error loading escalation:', error);
       addToast('Failed to load escalation', 'error');
@@ -150,11 +157,42 @@ export default function EscalationDetailPage() {
     }
   }
 
+  async function handleSaveAssignedTo() {
+    if (!escalation) return;
+    setSavingAssignedTo(true);
+    try {
+      const raw = assignedToDraft.trim();
+      const resolved = await resolveAssigneeInputToStoredEmail(raw);
+      if (raw && !raw.includes('@') && resolved === BOARD_UNASSIGNED) {
+        addToast(
+          'Kein passendes Benutzerprofil: bitte Arbeits-E-Mail eintragen (oder in Admin → Users anlegen).',
+          'warning'
+        );
+      }
+      const next = resolved === BOARD_UNASSIGNED ? 'Unassigned' : resolved;
+      await updateEscalationField(escalation.id, 'assignedTo', next, userEmail);
+      setEscalation({ ...escalation, assignedTo: next });
+      setAssignedToDraft(next === 'Unassigned' ? '' : next);
+      addToast('Assigned agent saved.', 'success');
+      await loadData();
+    } catch (error) {
+      console.error('Error saving assigned agent:', error);
+      addToast('Failed to save assigned agent', 'error');
+    } finally {
+      setSavingAssignedTo(false);
+    }
+  }
+
   async function handleSaveField(fieldName: string, value: string) {
     if (!escalation) return;
     setUpdating(true);
     try {
-      await updateEscalationField(escalation.id, fieldName, value, userEmail);
+      await updateEscalationField(
+        escalation.id,
+        fieldName as keyof Escalation,
+        value as Escalation[keyof Escalation],
+        userEmail
+      );
       setEscalation({ ...escalation, [fieldName]: value });
       addToast('Field updated successfully', 'success');
       setEditingField(null);
@@ -455,6 +493,39 @@ ${auditLog.slice(-10).reverse().map(entry =>
                         {isOverdue && ' ⚠️'}
                       </span>
                     </div>
+                  </div>
+                </div>
+
+                <div className="bg-white rounded-lg p-3 border border-gray-200">
+                  <div className="text-xs font-semibold text-gray-700 uppercase mb-2">Assigned agent</div>
+                  <p className="text-[11px] text-gray-500 mb-2">
+                    Trackboard owner. Name or work email; leave empty and save for &quot;Unassigned&quot;.
+                  </p>
+                  <input
+                    type="text"
+                    value={assignedToDraft}
+                    onChange={(e) => setAssignedToDraft(e.target.value)}
+                    placeholder="Name or email"
+                    className="w-full px-2 py-1.5 border border-gray-300 rounded text-sm text-gray-900 focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                  />
+                  <div className="flex flex-wrap gap-2 mt-2">
+                    {user?.email && (
+                      <button
+                        type="button"
+                        onClick={() => setAssignedToDraft(user.email || '')}
+                        className="px-2 py-1 text-xs bg-gray-100 text-gray-800 rounded hover:bg-gray-200"
+                      >
+                        Use my account
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      onClick={handleSaveAssignedTo}
+                      disabled={savingAssignedTo}
+                      className="px-3 py-1 text-xs font-semibold bg-blue-600 text-white rounded hover:bg-blue-700 disabled:opacity-50"
+                    >
+                      {savingAssignedTo ? 'Saving…' : 'Save'}
+                    </button>
                   </div>
                 </div>
 

@@ -10,6 +10,7 @@ import { useAuth } from '@/lib/contexts/AuthContext';
 import { HelpButton } from '@/components/HelpModal';
 import { getAllCases } from '@/lib/firebase/cases';
 import { getWeeklyReports, getActivityLog } from '@/lib/firebase/weeklyReports';
+import { resolveActivityKind, isActivityLowlightKind } from '@/lib/reporting/activityLogKinds';
 import { getCategories } from '@/lib/firebase/categories';
 
 const MARKETS = ['DACH', 'Nordics', 'BNL', 'Fr'] as const;
@@ -235,7 +236,7 @@ export default function MarketDeepDivePage() {
       const monthEscalations = activityLog.filter(a => {
         try {
           const logDate = a.weekOf instanceof Date ? a.weekOf : new Date(a.weekOf);
-          return a.category === 'Escalation' && logDate >= startDate && logDate <= endDate;
+          return isActivityLowlightKind(resolveActivityKind(a)) && logDate >= startDate && logDate <= endDate;
         } catch {
           return false;
         }

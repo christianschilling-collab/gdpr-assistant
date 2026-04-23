@@ -13,6 +13,10 @@ import { Escalation } from '@/lib/types/escalations';
 import { useAuth } from '@/lib/contexts/AuthContext';
 import { useToast } from '@/lib/contexts/ToastContext';
 import { addToRecentCases } from '@/lib/utils/recentCases';
+import {
+  resolveAssigneeInputToStoredEmail,
+  BOARD_UNASSIGNED,
+} from '@/lib/board/assigneeEmailDirectory';
 import { HelpModal, HelpButton } from '@/components/HelpModal';
 import { HELP_CONTENT } from '@/lib/constants/helpContent';
 // NEW: Workflow imports
@@ -78,7 +82,9 @@ export default function CaseDetailPage() {
   const [processSteps, setProcessSteps] = useState<ProcessStep[]>([]);
   const [completedSteps, setCompletedSteps] = useState<Set<number>>(new Set());
   const [showDeleteModal, setShowDeleteModal] = useState(false);
-  
+  const [teamMemberDraft, setTeamMemberDraft] = useState('');
+  const [savingAgent, setSavingAgent] = useState(false);
+
   // NEW: Workflow State
   const [workflow, setWorkflow] = useState<CaseWorkflow | null>(null);
   const [showWorkflowInit, setShowWorkflowInit] = useState(false);
@@ -210,6 +216,37 @@ export default function CaseDetailPage() {
       isCancelled = true;
     };
   }, [caseId]);
+
+  useEffect(() => {
+    if (!caseData) return;
+    const initial = (caseData.teamMember || caseData.assignedTo || '').trim();
+    setTeamMemberDraft(initial);
+  }, [caseData?.id, caseData?.teamMember, caseData?.assignedTo]);
+
+  async function handleSaveAgent() {
+    if (!caseData) return;
+    setSavingAgent(true);
+    setError('');
+    try {
+      const raw = teamMemberDraft.trim();
+      const resolved = await resolveAssigneeInputToStoredEmail(raw);
+      if (raw && !raw.includes('@') && resolved === BOARD_UNASSIGNED) {
+        addToast(
+          'Kein passendes Benutzerprofil: bitte Arbeits-E-Mail eintragen (oder in Admin → Users anlegen).',
+          'warning'
+        );
+      }
+      const next = resolved === BOARD_UNASSIGNED ? 'Unassigned' : resolved;
+      await updateCase(caseData.id, { teamMember: next });
+      setCaseData({ ...caseData, teamMember: next });
+      setTeamMemberDraft(next === 'Unassigned' ? '' : next);
+      addToast('Agent assignment saved.', 'success');
+    } catch (err: any) {
+      addToast(err?.message || 'Failed to save agent', 'error');
+    } finally {
+      setSavingAgent(false);
+    }
+  }
 
   async function handleProcessWithAI() {
     if (!caseData?.customerType) {
@@ -1033,15 +1070,50 @@ ${caseData.isGmail ? '• Source: Gmail' : ''}
                 {/* Metadata */}
                 <div className="bg-white rounded-lg p-3 border border-gray-200">
                   <p className="font-semibold text-gray-800 mb-2">ℹ️ Details</p>
-                  <div className="space-y-1.5 text-xs text-gray-600">
-                    <div>👨‍💼 <span className="text-gray-900">{caseData.teamMember}</span></div>
-                    <div>📅 <span className="text-gray-900">{safeToDate(caseData.timestamp).toLocaleDateString('de-DE', { 
-                      day: '2-digit', 
-                      month: '2-digit', 
-                      year: 'numeric',
-                      hour: '2-digit',
-                      minute: '2-digit'
-                    })}</span></div>
+                  <div className="space-y-2 text-xs text-gray-600">
+                    <div>
+                      <div className="text-gray-500 mb-1">Agent / owner</div>
+                      <div className="flex flex-col gap-2">
+                        <input
+                          type="text"
+                          value={teamMemberDraft}
+                          onChange={(e) => setTeamMemberDraft(e.target.value)}
+                          placeholder="Name or email"
+                          className="w-full px-2 py-1.5 border border-gray-300 rounded-md text-gray-900 text-xs focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                        />
+                        <div className="flex flex-wrap gap-2">
+                          {user?.email && (
+                            <button
+                              type="button"
+                              onClick={() => setTeamMemberDraft(user.email || '')}
+                              className="px-2 py-1 text-xs bg-gray-100 text-gray-800 rounded hover:bg-gray-200"
+                            >
+                              Use my account
+                            </button>
+                          )}
+                          <button
+                            type="button"
+                            onClick={handleSaveAgent}
+                            disabled={savingAgent}
+                            className="px-3 py-1 text-xs font-medium bg-blue-600 text-white rounded hover:bg-blue-700 disabled:opacity-50"
+                          >
+                            {savingAgent ? 'Saving…' : 'Save assignment'}
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                    <div>
+                      📅{' '}
+                      <span className="text-gray-900">
+                        {safeToDate(caseData.timestamp).toLocaleDateString('de-DE', {
+                          day: '2-digit',
+                          month: '2-digit',
+                          year: 'numeric',
+                          hour: '2-digit',
+                          minute: '2-digit',
+                        })}
+                      </span>
+                    </div>
                   </div>
                 </div>
               </div>

@@ -4,6 +4,7 @@ import { getMarketDeepDive } from '@/lib/firebase/marketDeepDive';
 import { getAllCases } from '@/lib/firebase/cases';
 import { getCategories } from '@/lib/firebase/categories';
 import { getWeeklyReports, getActivityLog } from '@/lib/firebase/weeklyReports';
+import { resolveActivityKind, isActivityLowlightKind } from '@/lib/reporting/activityLogKinds';
 import type { MarketDeepDive, MarketData } from '@/lib/types/marketDeepDive';
 
 export async function aggregateMarketDeepDive(month: string): Promise<MarketDeepDive> {
@@ -47,7 +48,7 @@ export async function aggregateMarketDeepDive(month: string): Promise<MarketDeep
     const monthEscalations = activityLog.filter(a => {
       try {
         const logDate = a.weekOf instanceof Date ? a.weekOf : new Date(a.weekOf);
-        return a.category === 'Escalation' && logDate >= startDate && logDate <= endDate;
+        return isActivityLowlightKind(resolveActivityKind(a)) && logDate >= startDate && logDate <= endDate;
       } catch {
         return false;
       }

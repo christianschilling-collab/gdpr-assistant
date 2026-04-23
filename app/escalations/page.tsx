@@ -32,11 +32,21 @@ export default function EscalationsListPage() {
     }
   }
 
-  // Stats
-  const activeEscalations = escalations.filter(e => e.status !== 'Closed').length;
-  const overdueEscalations = escalations.filter(e => 
-    e.status !== 'Closed' && e.deadlineFirstReply < new Date()
-  ).length;
+  function sortKeyCreatedAt(e: Escalation): number {
+    const d = e.createdAt;
+    return d instanceof Date && Number.isFinite(d.getTime()) ? d.getTime() : 0;
+  }
+
+  function isReplyOverdue(e: Escalation): boolean {
+    if (e.status === 'Closed') return false;
+    const d = e.deadlineFirstReply;
+    if (!(d instanceof Date) || !Number.isFinite(d.getTime())) return false;
+    return d < new Date();
+  }
+
+  // Stats (safe if Firestore returned partial legacy rows)
+  const activeEscalations = escalations.filter((e) => e.status !== 'Closed').length;
+  const overdueEscalations = escalations.filter(isReplyOverdue).length;
 
   if (loading) {
     return (
@@ -120,8 +130,8 @@ export default function EscalationsListPage() {
               </div>
             ) : (
               <div className="divide-y divide-gray-200">
-                {escalations
-                  .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())
+                {[...escalations]
+                  .sort((a, b) => sortKeyCreatedAt(b) - sortKeyCreatedAt(a))
                   .map((escalation) => (
                     <Link
                       key={escalation.id}
@@ -141,8 +151,12 @@ export default function EscalationsListPage() {
 }
 
 function EscalationRow({ escalation }: { escalation: Escalation }) {
-  const isOverdue = escalation.status !== 'Closed' && 
-    escalation.deadlineFirstReply < new Date();
+  const deadline =
+    escalation.deadlineFirstReply instanceof Date &&
+    Number.isFinite(escalation.deadlineFirstReply.getTime())
+      ? escalation.deadlineFirstReply
+      : null;
+  const isOverdue = escalation.status !== 'Closed' && deadline != null && deadline < new Date();
 
   return (
     <div className="flex items-center justify-between gap-6">
@@ -161,9 +175,11 @@ function EscalationRow({ escalation }: { escalation: Escalation }) {
             }`}>
               {escalation.status}
             </span>
-            {isOverdue && (
-              <ExclamationTriangleIcon className="w-4 h-4 text-orange-600" title="Reply deadline passed" />
-            )}
+            {isOverdue ? (
+              <span className="inline-flex" title="Reply deadline passed" aria-label="Reply deadline passed">
+                <ExclamationTriangleIcon className="w-4 h-4 text-orange-600" aria-hidden />
+              </span>
+            ) : null}
           </div>
         </div>
       </div>
@@ -184,10 +200,13 @@ function EscalationRow({ escalation }: { escalation: Escalation }) {
       <div className="text-right min-w-[140px]">
         <div className="text-sm text-gray-600">Reply by:</div>
         <div className={`font-semibold ${isOverdue ? 'text-orange-600' : 'text-gray-900'}`}>
-          {escalation.deadlineFirstReply.toLocaleDateString()}
+          {deadline ? deadline.toLocaleDateString() : '—'}
         </div>
         <div className="text-xs text-gray-500 mt-0.5">
-          Created: {escalation.createdAt.toLocaleDateString()}
+          Created:{' '}
+          {escalation.createdAt instanceof Date && Number.isFinite(escalation.createdAt.getTime())
+            ? escalation.createdAt.toLocaleDateString()
+            : '—'}
         </div>
       </div>
     </div>

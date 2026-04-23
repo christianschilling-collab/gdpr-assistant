@@ -10,7 +10,12 @@ const nextConfig = {
     return [
       {
         source: '/admin/reporting/upload',
-        destination: '/reporting/upload',
+        destination: '/reporting/submit/',
+        permanent: true,
+      },
+      {
+        source: '/reporting/upload',
+        destination: '/reporting/submit/',
         permanent: true,
       },
       {

@@ -2,12 +2,82 @@
 
 import { useEffect, useState, useMemo, useCallback, memo } from 'react';
 import Link from 'next/link';
-import { useRouter } from 'next/navigation';
 import { getCases } from '@/lib/firebase/cases';
 import { getAllIncidents } from '@/lib/firebase/incidents';
 import { getAllEscalations } from '@/lib/firebase/escalations';
+import { getCategories } from '@/lib/firebase/categories';
+import { getAllUsers } from '@/lib/firebase/users';
+import {
+  buildAssigneeDirectory,
+  emptyAssigneeDirectory,
+  BOARD_UNASSIGNED,
+  type AssigneeEmailDirectory,
+} from '@/lib/board/assigneeEmailDirectory';
 import { GDPRCase, Incident } from '@/lib/types';
-import { Escalation } from '@/lib/types/escalations';
+import { Escalation, EscalationMarket } from '@/lib/types/escalations';
+
+/** Same column template for header + rows — minmax(0,…) avoids overlap into neighbour columns */
+const BOARD_TABLE_GRID =
+  'grid grid-cols-[40px_minmax(0,6.5rem)_minmax(0,4.75rem)_minmax(0,7rem)_minmax(0,1fr)_minmax(0,9.5rem)_minmax(0,10rem)_minmax(0,4.25rem)] gap-x-2 gap-y-1 sm:gap-x-3';
+
+type MarketBucket = 'DACH' | 'France' | 'BNL' | 'Nordics' | 'Other';
+
+function categoryLabelFromMap(
+  categoryId: string | undefined,
+  nameById: Map<string, string>
+): string {
+  if (!categoryId?.trim()) return 'Uncategorized';
+  return nameById.get(categoryId) ?? 'Uncategorized';
+}
+
+function isoMarketToBucket(code: string | undefined | null): MarketBucket {
+  if (!code || typeof code !== 'string') return 'Other';
+  const c = code.trim().toUpperCase();
+  if (['DE', 'AT', 'CH'].includes(c)) return 'DACH';
+  if (['BE', 'LU', 'NL'].includes(c)) return 'BNL';
+  if (c === 'FR') return 'France';
+  if (['SE', 'DK', 'NO'].includes(c)) return 'Nordics';
+  return 'Other';
+}
+
+function escalationMarketToBucket(m: EscalationMarket | string | undefined): MarketBucket {
+  if (!m) return 'Other';
+  const map: Record<string, MarketBucket> = {
+    Germany: 'DACH',
+    Austria: 'DACH',
+    Switzerland: 'DACH',
+    France: 'France',
+    Belgium: 'BNL',
+    Netherlands: 'BNL',
+    Luxembourg: 'BNL',
+    Sweden: 'Nordics',
+    Norway: 'Nordics',
+    Denmark: 'Nordics',
+  };
+  return map[String(m)] ?? 'Other';
+}
+
+function caseMarketBuckets(c: GDPRCase): { label: string; buckets: MarketBucket[] } {
+  const b = isoMarketToBucket(c.market);
+  const label = b === 'Other' && c.market?.trim() ? c.market.trim() : b;
+  return { label, buckets: [b] };
+}
+
+function incidentMarketBuckets(i: Incident): { label: string; buckets: MarketBucket[] } {
+  const countries = (i.countryImpact || []).map((x) => x.country);
+  if (countries.length === 0) {
+    return { label: '—', buckets: ['Other'] };
+  }
+  const buckets = [...new Set(countries.map((c) => isoMarketToBucket(c)))];
+  const order: MarketBucket[] = ['DACH', 'BNL', 'France', 'Nordics', 'Other'];
+  buckets.sort((a, b) => order.indexOf(a) - order.indexOf(b));
+  return { label: buckets.join(', '), buckets };
+}
+
+function escalationMarketBuckets(e: Escalation): { label: string; buckets: MarketBucket[] } {
+  const b = escalationMarketToBucket(e.market);
+  return { label: b === 'Other' ? String(e.market) : b, buckets: [b] };
+}
 
 type BoardItem = {
   id: string;
@@ -16,6 +86,8 @@ type BoardItem = {
   category: string;
   subject: string;
   owner: string;
+  marketLabel: string;
+  marketBuckets: MarketBucket[];
   deadline: Date | null;
   source: string;
   status: string;
@@ -26,7 +98,6 @@ type BoardItem = {
 type UrgencyLevel = 'critical' | 'escalated' | 'warning' | 'open' | 'closed';
 
 export default function CommandCenterPage() {
-  const router = useRouter();
   const [items, setItems] = useState<BoardItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [currentTime, setCurrentTime] = useState(new Date());
@@ -34,6 +105,7 @@ export default function CommandCenterPage() {
   // Filters
   const [typeFilter, setTypeFilter] = useState<string[]>(['all']);
   const [agentFilter, setAgentFilter] = useState<string>('all');
+  const [marketFilters, setMarketFilters] = useState<string[]>(['all']);
   const [hideClosed, setHideClosed] = useState<boolean>(true); // Default: hide closed items
   
   const [uniqueAgents, setUniqueAgents] = useState<string[]>([]);
@@ -64,58 +136,88 @@ export default function CommandCenterPage() {
 
   const loadData = useCallback(async () => {
     try {
-      const [cases, incidents, escalations] = await Promise.all([
+      const [cases, incidents, escalations, categoryDocs, users] = await Promise.all([
         getCases(),
         getAllIncidents(),
         getAllEscalations(),
+        getCategories(false),
+        getAllUsers().catch((err) => {
+          console.warn('Board: could not load users for email-only assignees', err);
+          return [];
+        }),
       ]);
+
+      const assigneeDir: AssigneeEmailDirectory =
+        users.length > 0 ? buildAssigneeDirectory(users) : emptyAssigneeDirectory();
+
+      const nameById = new Map<string, string>();
+      for (const cat of categoryDocs) {
+        const label = (cat.nameEn || cat.name || '').trim();
+        if (label) nameById.set(cat.id, label);
+      }
       
       const allItems: BoardItem[] = [
-        ...cases.map(c => ({
-          id: c.id,
-          type: 'case' as const,
-          itemId: c.caseId,
-          category: c.primaryCategory || 'Unknown',
-          subject: c.caseDescription,
-          owner: c.teamMember,
-          deadline: null, // Cases don't have explicit deadlines
-          source: c.isGmail ? 'Gmail' : 'E-Mail',
-          status: c.status,
-          createdAt: c.timestamp,
-          raw: c,
-        })),
-        ...incidents.map(i => ({
-          id: i.id,
-          type: 'incident' as const,
-          itemId: i.incidentId,
-          category: 'Data Breach',
-          subject: i.natureOfIncident,
-          owner: (i as any).assignedTo || 'Unassigned',
-          deadline: new Date(i.discoveryDate.getTime() + 72 * 60 * 60 * 1000), // 72h from discovery
-          source: 'Internal',
-          status: i.status,
-          createdAt: i.createdAt,
-          raw: i,
-        })),
-        ...escalations.map(e => ({
-          id: e.id,
-          type: 'escalation' as const,
-          itemId: e.escalationId,
-          category: 'Escalation',
-          subject: e.summary,
-          owner: (e as any).assignedTo || 'Unassigned',
-          deadline: e.deadlineFirstReply,
-          source: 'Escalation',
-          status: e.status,
-          createdAt: e.createdAt,
-          raw: e,
-        })),
+        ...cases.map((c) => {
+          const { label, buckets } = caseMarketBuckets(c);
+          return {
+            id: c.id,
+            type: 'case' as const,
+            itemId: c.caseId,
+            category: categoryLabelFromMap(c.primaryCategory, nameById),
+            subject: c.caseDescription,
+            owner: assigneeDir.toEmail((c.teamMember || c.assignedTo || '').trim()),
+            marketLabel: label,
+            marketBuckets: buckets,
+            deadline: null, // Cases don't have explicit deadlines
+            source: c.isGmail ? 'Gmail' : 'E-Mail',
+            status: c.status,
+            createdAt: c.timestamp,
+            raw: c,
+          };
+        }),
+        ...incidents.map((i) => {
+          const { label, buckets } = incidentMarketBuckets(i);
+          return {
+            id: i.id,
+            type: 'incident' as const,
+            itemId: i.incidentId,
+            category: 'Data Breach',
+            subject: i.natureOfIncident,
+            owner: assigneeDir.toEmail((i.assignedTo || '').trim()),
+            marketLabel: label,
+            marketBuckets: buckets,
+            deadline: new Date(i.discoveryDate.getTime() + 72 * 60 * 60 * 1000), // 72h from discovery
+            source: 'Internal',
+            status: i.status,
+            createdAt: i.createdAt,
+            raw: i,
+          };
+        }),
+        ...escalations.map((e) => {
+          const { label, buckets } = escalationMarketBuckets(e);
+          return {
+            id: e.id,
+            type: 'escalation' as const,
+            itemId: e.escalationId,
+            category: 'Escalation',
+            subject: e.summary,
+            owner: assigneeDir.toEmail((e.assignedTo || '').trim()),
+            marketLabel: label,
+            marketBuckets: buckets,
+            deadline: e.deadlineFirstReply,
+            source: 'Escalation',
+            status: e.status,
+            createdAt: e.createdAt,
+            raw: e,
+          };
+        }),
       ];
       
       setItems(allItems);
       
-      // Extract unique agents
-      const agents = [...new Set(allItems.map(i => i.owner))].filter(a => a).sort();
+      const agents = [...new Set(allItems.map((i) => i.owner))]
+        .filter((a) => a && a !== BOARD_UNASSIGNED)
+        .sort((a, b) => a.localeCompare(b));
       setUniqueAgents(agents);
     } catch (error) {
       console.error('Error loading data:', error);
@@ -156,10 +258,24 @@ export default function CommandCenterPage() {
       // Type filter
       if (!typeFilter.includes('all')) {
         const itemCategory = item.category.toLowerCase();
-        const matchesType = typeFilter.some(t => {
+        const matchesType = typeFilter.some((t) => {
           if (t === 'data-breach') return item.type === 'incident';
-          if (t === 'sar') return itemCategory.includes('access') || itemCategory.includes('auskunft');
-          if (t === 'complaint') return itemCategory.includes('complaint') || itemCategory.includes('beschwerde');
+          if (t === 'sar') {
+            return (
+              itemCategory.includes('access') ||
+              itemCategory.includes('auskunft') ||
+              itemCategory.includes('subject access') ||
+              itemCategory.includes('dsar') ||
+              itemCategory.includes('right of access')
+            );
+          }
+          if (t === 'complaint') {
+            return (
+              itemCategory.includes('complaint') ||
+              itemCategory.includes('beschwerde') ||
+              itemCategory.includes('customer complaint')
+            );
+          }
           if (t === 'escalation') return item.type === 'escalation';
           return false;
         });
@@ -169,15 +285,20 @@ export default function CommandCenterPage() {
       // Agent filter
       if (agentFilter !== 'all') {
         if (agentFilter === 'unassigned') {
-          if (item.owner && item.owner !== 'Unassigned') return false;
+          if (item.owner !== BOARD_UNASSIGNED) return false;
         } else {
           if (item.owner !== agentFilter) return false;
         }
       }
+
+      if (!marketFilters.includes('all')) {
+        const matchesMarket = item.marketBuckets.some((b) => marketFilters.includes(b));
+        if (!matchesMarket) return false;
+      }
       
       return true;
     });
-  }, [items, hideClosed, typeFilter, agentFilter]);
+  }, [items, hideClosed, typeFilter, agentFilter, marketFilters]);
 
   // Memoize sorted items
   const sortedItems = useMemo(() => {
@@ -235,27 +356,50 @@ export default function CommandCenterPage() {
     }
   }, [typeFilter]);
 
+  const toggleMarketFilter = useCallback((id: string) => {
+    if (id === 'all') {
+      setMarketFilters(['all']);
+      return;
+    }
+    let next = marketFilters.filter((m) => m !== 'all');
+    if (next.includes(id)) {
+      next = next.filter((m) => m !== id);
+    } else {
+      next = [...next, id];
+    }
+    setMarketFilters(next.length === 0 ? ['all'] : next);
+  }, [marketFilters]);
+
   if (loading) {
     return (
-      <div className="min-h-screen bg-[#0a0e1a] flex items-center justify-center">
+      <div className="min-h-screen bg-gray-50 flex items-center justify-center">
         <div className="text-center">
-          <div className="animate-spin rounded-full h-16 w-16 border-b-2 border-[#6abf69] mx-auto"></div>
-          <p className="mt-4 text-[#94a3b8]">Loading...</p>
+          <div className="animate-spin rounded-full h-16 w-16 border-b-2 border-emerald-600 mx-auto" />
+          <p className="mt-4 text-gray-600">Loading…</p>
         </div>
       </div>
     );
   }
 
+  const marketChipOptions = [
+    { id: 'all', label: 'All Markets' },
+    { id: 'DACH', label: 'DACH' },
+    { id: 'France', label: 'France' },
+    { id: 'BNL', label: 'BNL' },
+    { id: 'Nordics', label: 'Nordics' },
+    { id: 'Other', label: 'Other' },
+  ] as const;
+
   return (
-    <div className="min-h-screen bg-[#0a0e1a] text-white">
+    <div className="min-h-screen bg-gray-50 text-gray-900 pb-28">
       {/* Header */}
-      <div className="border-b border-gray-800 bg-[#111827] px-6 py-4">
+      <div className="border-b border-gray-200 bg-white px-6 py-4 shadow-sm">
         <div className="max-w-[1800px] mx-auto flex items-center justify-between">
           <div>
             <div className="flex items-center gap-3 mb-2">
               <Link
                 href="/cases"
-                className="text-sm text-[#94a3b8] hover:text-white flex items-center gap-2"
+                className="text-sm text-gray-600 hover:text-gray-900 flex items-center gap-2"
               >
                 <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 19l-7-7m0 0l7-7m-7 7h18" />
@@ -263,109 +407,129 @@ export default function CommandCenterPage() {
                 ← Back to App
               </Link>
             </div>
-            <h1 className="text-3xl font-bold">
-              GDPR | <span className="text-[#6abf69]">TRACKBOARD</span>
+            <h1 className="text-3xl font-bold text-gray-900">
+              GDPR | <span className="text-emerald-600">TRACKBOARD</span>
             </h1>
-            <p className="text-sm text-[#94a3b8] mt-1">
-              Real-time Overview · Updated: {currentTime.toLocaleTimeString('en-US')}
+            <p className="text-sm text-gray-500 mt-1">
+              Real-time overview · Updated: {currentTime.toLocaleTimeString('en-US')}
             </p>
           </div>
-          
+
           <div className="flex gap-4">
-            {/* Critical Counter */}
-            <div className={`bg-[#111827] border-2 border-red-500 rounded-lg px-6 py-3 shadow-[0_0_20px_rgba(239,68,68,0.3)] ${criticalCount > 0 ? 'animate-[pulse_1s_ease-in-out_3]' : ''}`}>
-              <div className="text-xs text-[#94a3b8] uppercase mb-1">Critical</div>
-              <div className="text-3xl font-bold text-red-500">{criticalCount}</div>
+            <div
+              className={`bg-white border-2 border-red-500 rounded-lg px-6 py-3 shadow-sm ${
+                criticalCount > 0 ? 'ring-2 ring-red-200' : ''
+              }`}
+            >
+              <div className="text-xs text-gray-500 uppercase mb-1">Critical</div>
+              <div className="text-3xl font-bold text-red-600">{criticalCount}</div>
             </div>
-            
-            {/* Escalated Counter */}
-            <div className="bg-[#111827] border-2 border-orange-500 rounded-lg px-6 py-3 shadow-[0_0_20px_rgba(249,115,22,0.3)]">
-              <div className="text-xs text-[#94a3b8] uppercase mb-1">Escalated</div>
-              <div className="text-3xl font-bold text-orange-500">{escalatedCount}</div>
+
+            <div className="bg-white border-2 border-orange-500 rounded-lg px-6 py-3 shadow-sm">
+              <div className="text-xs text-gray-500 uppercase mb-1">Escalated</div>
+              <div className="text-3xl font-bold text-orange-600">{escalatedCount}</div>
             </div>
           </div>
         </div>
       </div>
 
-      {/* Filters */}
-      <div className="border-b border-gray-800 bg-[#0f1419] px-6 py-4">
-        <div className="max-w-[1800px] mx-auto space-y-3">
-          {/* Toggle Row: Hide Closed */}
-          <div className="flex items-center justify-between">
+      {/* Filters — compact: agent as select (scales to many users); markets in one scroll row */}
+      <div className="border-b border-gray-200 bg-white px-4 sm:px-6 py-2">
+        <div className="max-w-[1800px] mx-auto flex flex-col gap-2">
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
             <button
+              type="button"
               onClick={() => setHideClosed(!hideClosed)}
-              className="flex items-center gap-2 px-4 py-2 rounded-lg transition-all hover:bg-[#1a2332]"
+              className="flex items-center gap-2 rounded-md px-2 py-1 text-xs text-gray-600 hover:bg-gray-100 sm:text-sm"
             >
-              <div className={`w-10 h-5 rounded-full transition-colors ${hideClosed ? 'bg-blue-600' : 'bg-gray-600'} relative`}>
-                <div className={`absolute top-0.5 ${hideClosed ? 'right-0.5' : 'left-0.5'} w-4 h-4 bg-white rounded-full transition-all`}></div>
+              <div
+                className={`relative h-5 w-9 rounded-full transition-colors ${
+                  hideClosed ? 'bg-blue-600' : 'bg-gray-300'
+                }`}
+              >
+                <div
+                  className={`absolute top-0.5 ${
+                    hideClosed ? 'right-0.5' : 'left-0.5'
+                  } h-4 w-4 rounded-full bg-white shadow transition-all`}
+                />
               </div>
-              <span className="text-sm text-[#94a3b8]">Hide Closed</span>
+              <span>Hide closed</span>
             </button>
-          </div>
-          
-          {/* Row 1: Type Filter */}
-          <div className="flex items-center gap-3">
-            <span className="text-xs text-[#94a3b8] uppercase font-semibold w-24">Type:</span>
-            <div className="flex gap-2 flex-wrap">
+
+            <span className="hidden h-4 w-px bg-gray-200 sm:inline" aria-hidden />
+
+            <div className="flex min-w-0 max-w-full flex-wrap items-center gap-1">
+              <span className="shrink-0 pr-1 text-[10px] font-semibold uppercase tracking-wide text-gray-500">
+                Type
+              </span>
               {[
-                { id: 'all', label: 'All Types' },
-                { id: 'data-breach', label: 'Data Breach' },
-                { id: 'sar', label: 'Subject Access Request' },
+                { id: 'all', label: 'All' },
+                { id: 'data-breach', label: 'Breach' },
+                { id: 'sar', label: 'SAR' },
                 { id: 'complaint', label: 'Complaint' },
                 { id: 'escalation', label: 'Escalation' },
-              ].map(type => (
+              ].map((type) => (
                 <button
                   key={type.id}
+                  type="button"
                   onClick={() => toggleTypeFilter(type.id)}
-                  className={`px-4 py-1.5 rounded-full text-sm font-medium transition-all ${
+                  className={`whitespace-nowrap rounded-full px-2 py-0.5 text-xs font-medium transition-all sm:px-2.5 sm:text-[13px] ${
                     typeFilter.includes(type.id)
-                      ? 'bg-blue-600 text-white'
-                      : 'bg-transparent border border-gray-700 text-[#94a3b8] hover:border-gray-600'
+                      ? 'bg-blue-600 text-white shadow-sm'
+                      : 'border border-gray-300 bg-white text-gray-700 hover:border-gray-400'
                   }`}
+                  title={type.id === 'all' ? 'All types' : type.label}
                 >
                   {type.label}
                 </button>
               ))}
             </div>
-          </div>
-          
-          {/* Row 2: Agent Filter */}
-          <div className="flex items-center gap-3">
-            <span className="text-xs text-[#94a3b8] uppercase font-semibold w-24">Agent:</span>
-            <div className="flex gap-2 flex-wrap">
-              <button
-                onClick={() => setAgentFilter('all')}
-                className={`px-4 py-1.5 rounded-full text-sm font-medium transition-all ${
-                  agentFilter === 'all'
-                    ? 'bg-blue-600 text-white'
-                    : 'bg-transparent border border-gray-700 text-[#94a3b8] hover:border-gray-600'
-                }`}
+
+            <span className="hidden h-4 w-px bg-gray-200 md:inline" aria-hidden />
+
+            <div className="flex min-w-[12rem] max-w-full flex-1 basis-[14rem] items-center gap-2 sm:basis-auto sm:flex-none md:min-w-[16rem]">
+              <label htmlFor="board-agent-filter" className="shrink-0 text-[10px] font-semibold uppercase text-gray-500">
+                Agent
+              </label>
+              <select
+                id="board-agent-filter"
+                value={agentFilter}
+                onChange={(e) => setAgentFilter(e.target.value)}
+                className="min-w-0 flex-1 rounded-md border border-gray-300 bg-white py-1 pl-2 pr-7 text-xs text-gray-900 sm:text-sm"
               >
-                All Agents
-              </button>
-              {uniqueAgents.map(agent => (
+                <option value="all">All agents</option>
+                {uniqueAgents.map((agent) => (
+                  <option key={agent} value={agent}>
+                    {agent}
+                  </option>
+                ))}
+                <option value="unassigned">Unassigned</option>
+              </select>
+            </div>
+          </div>
+
+          <div className="flex min-w-0 items-center gap-2">
+            <span
+              className="shrink-0 text-[10px] font-semibold uppercase text-gray-500"
+              title="Select multiple regions"
+            >
+              Market
+            </span>
+            <div className="flex min-w-0 flex-1 flex-nowrap gap-1 overflow-x-auto py-0.5 [scrollbar-width:thin]">
+              {marketChipOptions.map((m) => (
                 <button
-                  key={agent}
-                  onClick={() => setAgentFilter(agent)}
-                  className={`px-4 py-1.5 rounded-full text-sm font-medium transition-all ${
-                    agentFilter === agent
-                      ? 'bg-blue-600 text-white'
-                      : 'bg-transparent border border-gray-700 text-[#94a3b8] hover:border-gray-600'
+                  key={m.id}
+                  type="button"
+                  onClick={() => toggleMarketFilter(m.id)}
+                  className={`shrink-0 whitespace-nowrap rounded-full px-2 py-0.5 text-xs font-medium transition-all ${
+                    marketFilters.includes(m.id)
+                      ? 'bg-blue-600 text-white shadow-sm'
+                      : 'border border-gray-300 bg-white text-gray-700 hover:border-gray-400'
                   }`}
                 >
-                  {agent}
+                  {m.label}
                 </button>
               ))}
-              <button
-                onClick={() => setAgentFilter('unassigned')}
-                className={`px-4 py-1.5 rounded-full text-sm font-medium transition-all ${
-                  agentFilter === 'unassigned'
-                    ? 'bg-blue-600 text-white'
-                    : 'bg-transparent border border-gray-700 text-[#94a3b8] hover:border-gray-600'
-                }`}
-              >
-                Unassigned
-              </button>
             </div>
           </div>
         </div>
@@ -374,50 +538,56 @@ export default function CommandCenterPage() {
       {/* Table */}
       <div className="px-6 py-6">
         <div className="max-w-[1800px] mx-auto">
-          {/* Column Headers */}
-          <div className="grid grid-cols-[60px_140px_180px_1fr_140px_280px_140px] gap-4 px-4 py-3 text-xs text-[#94a3b8] uppercase font-semibold border-b border-gray-800">
-            <div>Status</div>
-            <div>ID</div>
-            <div>Type</div>
-            <div>Subject</div>
-            <div>Owner</div>
-            <div>Deadline</div>
-            <div>Source</div>
+          <div
+            className={`${BOARD_TABLE_GRID} border-b border-gray-200 px-3 py-2 text-[10px] font-semibold uppercase tracking-wide text-gray-500 sm:px-4 sm:text-xs`}
+          >
+            <div className="min-w-0">St</div>
+            <div className="min-w-0 truncate">ID</div>
+            <div className="min-w-0 truncate">Mkt</div>
+            <div className="min-w-0 truncate">Type</div>
+            <div className="min-w-0">Subject</div>
+            <div className="min-w-0 truncate">Owner</div>
+            <div className="min-w-0 truncate">Deadline</div>
+            <div className="min-w-0 truncate">Src</div>
           </div>
 
-          {/* Rows */}
           <div className="space-y-2 mt-4">
-            {sortedItems.map(item => (
+            {sortedItems.map((item) => (
               <TrackboardRow key={item.id} item={item} urgency={getUrgencyLevel(item)} />
             ))}
-            
+
             {sortedItems.length === 0 && (
-              <div className="text-center py-12 text-[#94a3b8]">
-                No items found
-              </div>
+              <div className="text-center py-12 text-gray-500">No items found</div>
             )}
           </div>
         </div>
       </div>
 
-      {/* Legend */}
-      <div className="fixed bottom-0 left-0 right-0 bg-[#111827] border-t border-gray-800 px-6 py-4">
-        <div className="max-w-[1800px] mx-auto flex items-center justify-center gap-8 text-sm">
+      <div className="fixed bottom-0 left-0 right-0 bg-white border-t border-gray-200 px-6 py-3 shadow-[0_-4px_12px_rgba(0,0,0,0.06)]">
+        <div className="max-w-[1800px] mx-auto flex flex-wrap items-center justify-center gap-6 text-sm text-gray-600">
           <div className="flex items-center gap-2">
-            <div className="w-3 h-3 rounded-full bg-red-500 animate-pulse"></div>
-            <span className="text-[#94a3b8]"><span className="font-semibold text-white">CRITICAL</span> = immediate action required (e.g. 72h breach notification)</span>
+            <div className="w-3 h-3 rounded-full bg-red-500 shrink-0" />
+            <span>
+              <span className="font-semibold text-gray-900">Critical</span> — immediate action (e.g. 72h breach window)
+            </span>
           </div>
           <div className="flex items-center gap-2">
-            <div className="w-3 h-3 rounded-full bg-orange-500"></div>
-            <span className="text-[#94a3b8]"><span className="font-semibold text-white">ESCALATED</span> = legal / regulatory involvement</span>
+            <div className="w-3 h-3 rounded-full bg-orange-500 shrink-0" />
+            <span>
+              <span className="font-semibold text-gray-900">Escalated</span> — legal / regulatory track
+            </span>
           </div>
           <div className="flex items-center gap-2">
-            <div className="w-3 h-3 rounded-full bg-yellow-500"></div>
-            <span className="text-[#94a3b8]"><span className="font-semibold text-white">WARNING</span> = deadline more than 50% elapsed</span>
+            <div className="w-3 h-3 rounded-full bg-yellow-500 shrink-0" />
+            <span>
+              <span className="font-semibold text-gray-900">Warning</span> — over 50% of deadline elapsed
+            </span>
           </div>
           <div className="flex items-center gap-2">
-            <div className="w-3 h-3 rounded-full bg-green-500"></div>
-            <span className="text-[#94a3b8]"><span className="font-semibold text-white">OPEN</span> = in progress</span>
+            <div className="w-3 h-3 rounded-full bg-green-500 shrink-0" />
+            <span>
+              <span className="font-semibold text-gray-900">Open</span> — in progress
+            </span>
           </div>
         </div>
       </div>
@@ -453,19 +623,34 @@ const TrackboardRow = memo(function TrackboardRow({ item, urgency }: TrackboardR
     isOverdue = hoursRemaining < 0;
   }
 
+  const catLower = item.category.toLowerCase();
+  const looksLikeSar =
+    catLower.includes('access') ||
+    catLower.includes('auskunft') ||
+    catLower.includes('subject access') ||
+    catLower.includes('dsar') ||
+    catLower.includes('right of access');
+
   // Urgency styling
-  const glowColor = 
-    urgency === 'critical' ? 'shadow-[0_0_30px_rgba(239,68,68,0.4)]' :
-    urgency === 'escalated' ? 'shadow-[0_0_30px_rgba(249,115,22,0.3)]' :
-    urgency === 'warning' ? 'shadow-[0_0_20px_rgba(234,179,8,0.2)]' :
-    '';
-  
-  const borderColor = 
-    urgency === 'critical' ? 'border-l-red-500' :
-    urgency === 'escalated' ? 'border-l-orange-500' :
-    urgency === 'warning' ? 'border-l-yellow-500' :
-    urgency === 'open' ? 'border-l-green-700' :
-    'border-l-gray-700';
+  const glowColor =
+    urgency === 'critical'
+      ? 'shadow-md shadow-red-100 ring-1 ring-red-100'
+      : urgency === 'escalated'
+        ? 'shadow-md shadow-orange-100 ring-1 ring-orange-100'
+        : urgency === 'warning'
+          ? 'shadow-sm shadow-amber-100'
+          : '';
+
+  const borderColor =
+    urgency === 'critical'
+      ? 'border-l-red-500'
+      : urgency === 'escalated'
+        ? 'border-l-orange-500'
+        : urgency === 'warning'
+          ? 'border-l-yellow-500'
+          : urgency === 'open'
+            ? 'border-l-emerald-600'
+            : 'border-l-gray-300';
   
   const dotColor = 
     urgency === 'critical' ? 'bg-red-500 animate-pulse' :
@@ -480,70 +665,89 @@ const TrackboardRow = memo(function TrackboardRow({ item, urgency }: TrackboardR
     progressPercent >= 50 ? 'bg-yellow-500' :
     'bg-green-500';
   
-  const typeBadgeColor = 
-    item.category === 'Data Breach' ? 'bg-red-600' :
-    item.category.toLowerCase().includes('access') || item.category.toLowerCase().includes('auskunft') ? 'bg-blue-600' :
-    item.category.toLowerCase().includes('complaint') || item.category.toLowerCase().includes('beschwerde') ? 'bg-purple-600' :
-    item.category === 'Escalation' ? 'bg-orange-600' :
-    'bg-gray-600';
+  const typeBadgeColor =
+    item.category === 'Data Breach'
+      ? 'bg-red-600'
+      : looksLikeSar
+        ? 'bg-blue-600'
+        : catLower.includes('complaint') ||
+            catLower.includes('beschwerde') ||
+            catLower.includes('customer complaint')
+          ? 'bg-purple-600'
+          : item.category === 'Escalation'
+            ? 'bg-orange-600'
+            : 'bg-gray-600';
 
   const opacity = urgency === 'closed' ? 'opacity-40' : '';
 
   return (
     <Link
       href={href}
-      className={`block bg-[#111827] rounded-lg border-l-4 ${borderColor} ${glowColor} ${opacity} hover:bg-[#1a2332] transition-all`}
+      className={`block overflow-hidden bg-white rounded-lg border border-gray-200 border-l-4 ${borderColor} ${glowColor} ${opacity} hover:bg-gray-50 transition-all`}
     >
-      <div className="grid grid-cols-[60px_140px_180px_1fr_140px_280px_140px] gap-4 px-4 py-4 items-center">
-        {/* Status Dot */}
-        <div>
-          <div className={`w-4 h-4 rounded-full ${dotColor}`}></div>
+      <div className={`${BOARD_TABLE_GRID} items-start px-3 py-3 sm:px-4 sm:py-4`}>
+        <div className="min-w-0 flex items-center pt-1.5">
+          <div className={`h-3.5 w-3.5 shrink-0 rounded-full sm:h-4 sm:w-4 ${dotColor}`} />
         </div>
 
-        {/* ID */}
-        <div className="font-mono text-sm text-white">{item.itemId}</div>
+        <div className="min-w-0 font-mono text-xs text-gray-900 truncate sm:text-sm" title={item.itemId}>
+          {item.itemId}
+        </div>
 
-        {/* Type Badge */}
-        <div>
-          <span className={`px-3 py-1 rounded text-xs font-semibold text-white ${typeBadgeColor}`}>
+        <div className="min-w-0 truncate text-[11px] font-medium text-gray-700 sm:text-xs" title={item.marketLabel}>
+          {item.marketLabel}
+        </div>
+
+        <div className="min-w-0">
+          <span
+            className={`inline-block max-w-full truncate rounded px-1.5 py-0.5 text-[10px] font-semibold text-white sm:px-2 sm:text-xs ${typeBadgeColor}`}
+            title={item.category}
+          >
             {item.category}
           </span>
         </div>
 
-        {/* Subject */}
-        <div className="font-bold text-white truncate" title={item.subject}>
-          {item.subject.length > 60 ? item.subject.substring(0, 60) + '...' : item.subject}
+        <div className="min-w-0 font-semibold text-gray-900 truncate text-sm" title={item.subject}>
+          {item.subject.length > 80 ? item.subject.substring(0, 80) + '…' : item.subject}
         </div>
 
-        {/* Owner */}
-        <div className="text-sm text-[#94a3b8]">
-          {item.owner && item.owner !== 'Unassigned' ? item.owner.split(' ')[0] : <span className="italic">Unassigned</span>}
+        <div className="min-w-0 truncate text-xs text-gray-700 sm:text-sm" title={item.owner}>
+          {item.owner !== BOARD_UNASSIGNED ? (
+            <span className="block truncate">{item.owner}</span>
+          ) : (
+            <span className="italic text-gray-500">Unassigned</span>
+          )}
         </div>
 
-        {/* Deadline Progress */}
-        <div>
+        <div className="min-w-0">
           {item.deadline ? (
             <>
-              <div className="h-2 bg-gray-700 rounded-full overflow-hidden mb-1">
+              <div className="mb-1 h-1.5 overflow-hidden rounded-full bg-gray-200 sm:h-2">
                 <div
                   className={`h-full ${progressBarColor} transition-all`}
                   style={{ width: `${Math.min(progressPercent, 100)}%` }}
-                ></div>
+                />
               </div>
-              <div className="text-xs text-[#94a3b8]">
-                {hoursOpen}h open · {isOverdue ? <span className="text-red-500 font-semibold">OVERDUE</span> : `${hoursRemaining}h remaining`}
+              <div className="whitespace-nowrap text-[10px] leading-tight text-gray-500 sm:text-xs">
+                {hoursOpen}h ·{' '}
+                {isOverdue ? (
+                  <span className="font-semibold text-red-600">OVERDUE</span>
+                ) : (
+                  <span>{hoursRemaining}h left</span>
+                )}
               </div>
             </>
           ) : (
             <>
-              <div className="h-2 bg-gray-700 rounded-full mb-1"></div>
-              <div className="text-xs text-[#94a3b8] italic">No Deadline</div>
+              <div className="mb-1 h-1.5 rounded-full bg-gray-200 sm:h-2" />
+              <div className="text-[10px] italic text-gray-500 sm:text-xs">None</div>
             </>
           )}
         </div>
 
-        {/* Source */}
-        <div className="text-sm text-[#94a3b8] truncate">{item.source}</div>
+        <div className="min-w-0 truncate text-xs text-gray-600 sm:text-sm" title={item.source}>
+          {item.source}
+        </div>
       </div>
     </Link>
   );

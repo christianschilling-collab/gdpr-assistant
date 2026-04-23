@@ -229,8 +229,8 @@ export const HELP_CONTENT = {
             description: 'Manage weekly market reports and generate monthly summaries for management.',
           },
           {
-            label: 'Weekly Reports Upload',
-            description: 'Import weekly report data from CSV (from Google Forms).',
+            label: 'Weekly market report',
+            description: 'Local teams submit volumes, risk, and structured activity rows in the web form.',
           },
         ],
       },
@@ -295,7 +295,7 @@ export const HELP_CONTENT = {
           },
           {
             label: 'Activity Log',
-            description: 'Escalations, Wins, and Initiatives grouped by market and category.',
+            description: 'Structured notes (wins, initiatives, complaints, incidents, etc.) grouped by type and market.',
           },
           {
             label: 'Training Snapshot',
@@ -311,8 +311,8 @@ export const HELP_CONTENT = {
             description: 'Copy the entire report as HTML email format for sending to management.',
           },
           {
-            label: 'Upload Weekly Report',
-            description: 'Import new data from Google Forms CSV (Admin only).',
+            label: 'Submit weekly report',
+            description: 'Use Reporting → Submit weekly data to add or update a market/week (same data as the dashboard).',
           },
         ],
       },

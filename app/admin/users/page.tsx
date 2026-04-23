@@ -4,7 +4,15 @@ import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { useAuth } from '@/lib/contexts/AuthContext';
-import { getAllUsers, updateUserRole, activateUser, deactivateUser, UserProfile, UserRole } from '@/lib/firebase/users';
+import {
+  getAllUsers,
+  updateUserRole,
+  updateUserAssigneeAliases,
+  activateUser,
+  deactivateUser,
+  UserProfile,
+  UserRole,
+} from '@/lib/firebase/users';
 import { useToast } from '@/lib/contexts/ToastContext';
 
 // TEMPORARY FALLBACK: Admin emails
@@ -13,6 +21,28 @@ const ADMIN_EMAILS = [
   'christian.schilling@ext.hellofresh.com',
   'christian.schilling@hellofresh.de',
 ];
+
+const ROLE_ORDER: Record<UserRole, number> = {
+  admin: 0,
+  team_lead: 1,
+  legal: 2,
+  agent: 3,
+};
+
+function userRoleLabel(role: UserRole): string {
+  switch (role) {
+    case 'admin':
+      return 'Admin';
+    case 'team_lead':
+      return 'Team lead';
+    case 'legal':
+      return 'Legal';
+    case 'agent':
+      return 'Agent';
+    default:
+      return role;
+  }
+}
 
 export default function UserManagementPage() {
   const router = useRouter();
@@ -29,6 +59,8 @@ export default function UserManagementPage() {
   const [newUserRole, setNewUserRole] = useState<UserRole>('agent');
   const [newUserDisplayName, setNewUserDisplayName] = useState('');
   const [addingUser, setAddingUser] = useState(false);
+  /** Comma-separated alias drafts keyed by user email (trackboard assignee resolution). */
+  const [aliasDraftByEmail, setAliasDraftByEmail] = useState<Record<string, string>>({});
 
   // Check if user is admin by email (fallback)
   const isAdminByEmail = user?.email && ADMIN_EMAILS.includes(user.email);
@@ -63,7 +95,7 @@ export default function UserManagementPage() {
       setLoading(true);
       
       // For local dev without Firestore Rules: Generate user list from ADMIN_EMAILS
-      const mockUsers: UserProfile[] = ADMIN_EMAILS.map(email => ({
+      const mockUsers: UserProfile[] = ADMIN_EMAILS.map((email) => ({
         id: email,
         email,
         role: 'admin' as UserRole,
@@ -78,11 +110,17 @@ export default function UserManagementPage() {
         const allUsers = await getAllUsers();
         // If successful, use Firestore data
         allUsers.sort((a, b) => {
-          if (a.role === 'admin' && b.role !== 'admin') return -1;
-          if (a.role !== 'admin' && b.role === 'admin') return 1;
+          const ra = ROLE_ORDER[a.role] ?? 9;
+          const rb = ROLE_ORDER[b.role] ?? 9;
+          if (ra !== rb) return ra - rb;
           return a.email.localeCompare(b.email);
         });
         setUsers(allUsers);
+        const drafts: Record<string, string> = {};
+        for (const u of allUsers) {
+          drafts[u.email] = (u.assigneeAliases ?? []).join(', ');
+        }
+        setAliasDraftByEmail(drafts);
         console.log('✅ Users loaded from Firestore');
       } catch (firestoreError) {
         // Fallback to mock data for local dev
@@ -125,6 +163,25 @@ export default function UserManagementPage() {
     } catch (error: any) {
       console.error('Error toggling user status:', error);
       addToast(error.message || 'Failed to update user status', 'error');
+    } finally {
+      setUpdating(null);
+    }
+  }
+
+  async function handleSaveAliases(email: string) {
+    const raw = aliasDraftByEmail[email] ?? '';
+    const parts = raw
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean);
+    try {
+      setUpdating(email);
+      await updateUserAssigneeAliases(email, parts);
+      addToast('Trackboard aliases saved.', 'success');
+      await loadUsers();
+    } catch (error: any) {
+      console.error('Error saving aliases:', error);
+      addToast(error.message || 'Failed to save aliases', 'error');
     } finally {
       setUpdating(null);
     }
@@ -211,6 +268,11 @@ export default function UserManagementPage() {
             <li><strong>Admin Access:</strong> Defined in code via ADMIN_EMAILS array</li>
             <li><strong>Add New Admins:</strong> Edit ADMIN_EMAILS in Navigation.tsx, AuthGuard.tsx, admin/page.tsx, and admin/users/page.tsx</li>
             <li><strong>Production:</strong> Will migrate to Firestore-based user management with proper Rules</li>
+            <li>
+              <strong>Roles:</strong> <code className="rounded bg-blue-100 px-1">agent</code> opens the case list after
+              login; <code className="rounded bg-blue-100 px-1">admin</code>, <code className="rounded bg-blue-100 px-1">team_lead</code>, and{' '}
+              <code className="rounded bg-blue-100 px-1">legal</code> open the tracking board.
+            </li>
           </ul>
         </div>
 
@@ -225,6 +287,9 @@ export default function UserManagementPage() {
               <tr>
                 <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                   User
+                </th>
+                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider min-w-[200px] max-w-md">
+                  Trackboard aliases
                 </th>
                 <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                   Role
@@ -253,15 +318,51 @@ export default function UserManagementPage() {
                       </div>
                     </div>
                   </td>
+                  <td className="px-6 py-3 align-top">
+                    <p className="text-xs text-gray-500 mb-1">
+                      Kommagetrennt (z. B. <span className="font-mono">Chris</span>) — wird zur E-Mail dieses Users
+                      aufgelöst.
+                    </p>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <input
+                        type="text"
+                        value={aliasDraftByEmail[userProfile.email] ?? ''}
+                        onChange={(e) =>
+                          setAliasDraftByEmail((prev) => ({
+                            ...prev,
+                            [userProfile.email]: e.target.value,
+                          }))
+                        }
+                        className="min-w-[10rem] flex-1 rounded border border-gray-300 px-2 py-1 text-sm"
+                        placeholder="Chris, CS"
+                        disabled={updating === userProfile.email}
+                      />
+                      <button
+                        type="button"
+                        onClick={() => void handleSaveAliases(userProfile.email)}
+                        disabled={updating === userProfile.email}
+                        className="shrink-0 rounded bg-blue-600 px-2 py-1 text-xs font-medium text-white hover:bg-blue-700 disabled:opacity-50"
+                      >
+                        Save
+                      </button>
+                    </div>
+                  </td>
                   <td className="px-6 py-4 whitespace-nowrap">
-                    <span className={`text-sm font-medium ${
-                      userProfile.role === 'admin'
-                        ? 'text-orange-700'
-                        : 'text-blue-700'
-                    }`}>
-                      {userProfile.role === 'admin' ? 'Admin' : 'Agent'}
-                    </span>
-                    <div className="text-xs text-gray-500 mt-1">(Configured in code)</div>
+                    <label className="sr-only" htmlFor={`role-${userProfile.email}`}>
+                      Role for {userProfile.email}
+                    </label>
+                    <select
+                      id={`role-${userProfile.email}`}
+                      value={userProfile.role}
+                      onChange={(e) => void handleRoleChange(userProfile.email, e.target.value as UserRole)}
+                      disabled={updating === userProfile.email}
+                      className="mt-0.5 block max-w-[11rem] rounded-md border border-gray-300 bg-white py-1.5 pl-2 pr-8 text-sm font-medium text-gray-900 focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500 disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      <option value="agent">{userRoleLabel('agent')}</option>
+                      <option value="team_lead">{userRoleLabel('team_lead')}</option>
+                      <option value="legal">{userRoleLabel('legal')}</option>
+                      <option value="admin">{userRoleLabel('admin')}</option>
+                    </select>
                   </td>
                   <td className="px-6 py-4 whitespace-nowrap">
                     <span className="px-2 py-1 text-xs font-semibold rounded-full bg-green-100 text-green-800">
@@ -353,8 +454,10 @@ export default function UserManagementPage() {
                     className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
                     disabled={addingUser}
                   >
-                    <option value="agent">Agent</option>
-                    <option value="admin">Admin</option>
+                    <option value="agent">{userRoleLabel('agent')}</option>
+                    <option value="team_lead">{userRoleLabel('team_lead')}</option>
+                    <option value="legal">{userRoleLabel('legal')}</option>
+                    <option value="admin">{userRoleLabel('admin')}</option>
                   </select>
                 </div>
               </div>

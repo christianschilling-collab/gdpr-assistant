@@ -1,4 +1,11 @@
 import type { WeeklyReport, ActivityLogEntry } from "@/lib/types";
+import { ACTIVITY_KIND_LABELS } from "@/lib/types";
+import {
+  resolveActivityKind,
+  isActivityLowlightKind,
+  formatActivityEntryPlainText,
+  displayMarketLabel,
+} from "@/lib/reporting/activityLogKinds";
 import type { TrainingReport } from "@/lib/types/training";
 import type { MarketDeepDive } from "@/lib/types/marketDeepDive";
 import { getMarketStatusData, formatMonthDisplay } from "@/lib/reporting/reportMetrics";
@@ -139,7 +146,7 @@ function generateMonthlySummaryHTML(
 
           const marketStatus = marketStatusData.find(m => {
             if (market === 'Fr') return m.market === 'France';
-            if (market === 'BNL') return m.market === 'NL' || m.market === 'Be / Lux';
+            if (market === 'BNL') return m.market === 'BNL';
             return m.market === market;
           });
 
@@ -332,12 +339,12 @@ function generateMonthlySummaryHTML(
 
     <div class="footer">
       <p style="margin:0;">Report generated on ${new Date().toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' })}</p>
-      <a class="footer-cta" href="https://gdpr-assistant.hellofresh.com/reporting/view" target="_blank" rel="noopener noreferrer">View live report online</a>
+      <a class="footer-cta" href="https://gdpr-assistant.hellofresh.com/reporting" target="_blank" rel="noopener noreferrer">View live report online</a>
       <p style="margin: 14px 0 0 0;"><strong style="color:#334155;">HelloFresh GDPR Team</strong></p>
       ${marketDeepDive && marketDeepDive.attributions && marketDeepDive.attributions.length > 0 ? `
       <p style="margin: 12px 0 0 0; line-height: 1.5;">With thanks for contributions:<br>${marketDeepDive.attributions.sort().map(email => `<span style="color:#334155;font-weight:600;">${escHtml(email)}</span>`).join(' · ')}</p>
       ` : ''}
-      <p style="margin: 16px 0 0 0; font-size: 11px; color: #94a3b8;">The live link reflects the same data after weekly uploads and overrides — handy for a quick refresh before meetings.</p>
+      <p style="margin: 16px 0 0 0; font-size: 11px; color: #94a3b8;">The live link reflects the same data after weekly submissions and overrides — handy for a quick refresh before meetings.</p>
     </div>
   </div>
 </body>
@@ -346,44 +353,41 @@ function generateMonthlySummaryHTML(
 }
 
 function generateHighlightsHTML(activityLog: ActivityLogEntry[]): string {
-  const wins = activityLog.filter(a => a.category === 'Initiative' && a.details.startsWith('✅'));
-  const initiatives = activityLog.filter(a => a.category === 'Initiative' && !a.details.startsWith('✅'));
-  
+  const wins = activityLog.filter(a => resolveActivityKind(a) === 'win');
+  const initiatives = activityLog.filter(a => resolveActivityKind(a) === 'initiative');
+  const noteworthy = activityLog.filter(a => resolveActivityKind(a) === 'noteworthy');
+  const observations = activityLog.filter(a => resolveActivityKind(a) === 'observation');
+
+  const renderList = (entries: ActivityLogEntry[], title: string, titleColor: string) => {
+    if (entries.length === 0) return '';
+    let block = `<div class="init-box" style="margin-bottom:10px;">`;
+    block += `<h3 style="margin: 0 0 8px 0; font-size: 13px; font-weight: 800; color: ${titleColor};">${escHtml(title)}</h3>`;
+    block += '<ul style="margin: 4px 0;">';
+    entries.forEach(e => {
+      const dateStr = e.weekOf ? new Date(e.weekOf).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) : '';
+      const body = escHtml(formatActivityEntryPlainText(e).replace(/^\u2705\s*/, ''));
+      block += `<li><span class="market-tag">${escHtml(displayMarketLabel(e.market))}</span>${body} <span style="color: #9ca3af; font-size: 11px;">(${dateStr})</span></li>`;
+    });
+    block += '</ul></div>';
+    return block;
+  };
+
   let html = '';
-  
-  if (wins.length > 0) {
-    html += '<div class="win-box">';
-    html += '<h3 style="margin: 0 0 8px 0; font-size: 13px; font-weight: 800; color: #14532d;">Wins &amp; achievements</h3>';
-    html += '<ul style="margin: 4px 0;">';
-    wins.forEach(w => {
-      const dateStr = w.weekOf ? new Date(w.weekOf).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) : '';
-      html += `<li><span class="market-tag">${escHtml(w.market)}</span>${escHtml(w.details.replace('✅ ', ''))} <span style="color: #9ca3af; font-size: 11px;">(${dateStr})</span></li>`;
-    });
-    html += '</ul>';
-    html += '</div>';
+  html += renderList(wins, 'Wins & achievements', '#14532d');
+  html += renderList(initiatives, 'Current initiatives', '#1e3a8a');
+  html += renderList(noteworthy, 'Noteworthy', '#92400e');
+  html += renderList(observations, 'Observations', '#0c4a6e');
+
+  if (!wins.length && !initiatives.length && !noteworthy.length && !observations.length) {
+    html += '<p style="color: #9ca3af; font-style: italic; font-size: 12px;">No highlights reported this month.</p>';
   }
-  
-  if (initiatives.length > 0) {
-    html += '<div class="init-box">';
-    html += '<h3 style="margin: 0 0 8px 0; font-size: 13px; font-weight: 800; color: #1e3a8a;">Current initiatives</h3>';
-    html += '<ul style="margin: 4px 0;">';
-    initiatives.forEach(i => {
-      html += `<li><span class="market-tag">${escHtml(i.market)}</span>${escHtml(i.details)}</li>`;
-    });
-    html += '</ul>';
-    html += '</div>';
-  }
-  
-  if (wins.length === 0 && initiatives.length === 0) {
-    html += '<p style="color: #9ca3af; font-style: italic; font-size: 12px;">No major wins or initiatives reported this month.</p>';
-  }
-  
+
   return html;
 }
 
 function generateLowlightsHTML(reports: WeeklyReport[], activityLog: ActivityLogEntry[]): string {
   const atRiskMarkets = getMarketStatusData(reports).filter(m => m.status === 'yellow' || m.status === 'red');
-  const escalations = activityLog.filter(a => a.category === 'Escalation');
+  const escalations = activityLog.filter(a => isActivityLowlightKind(resolveActivityKind(a)));
   
   let html = '';
   
@@ -405,8 +409,9 @@ function generateLowlightsHTML(reports: WeeklyReport[], activityLog: ActivityLog
     
     // Group escalations by market
     const escalationsByMarket = escalations.reduce((acc, e) => {
-      if (!acc[e.market]) acc[e.market] = [];
-      acc[e.market].push(e);
+      const m = displayMarketLabel(e.market);
+      if (!acc[m]) acc[m] = [];
+      acc[m].push(e);
       return acc;
     }, {} as Record<string, ActivityLogEntry[]>);
     
@@ -414,7 +419,9 @@ function generateLowlightsHTML(reports: WeeklyReport[], activityLog: ActivityLog
     Object.entries(escalationsByMarket).forEach(([market, entries]) => {
       html += `<div style="margin: 8px 0;"><strong style="color: #374151; font-size: 12px;">${market}:</strong><ul style="margin: 2px 0; padding-left: 20px;">`;
       entries.forEach(e => {
-        html += `<li>${e.details}</li>`;
+        const k = resolveActivityKind(e);
+        const label = escHtml(ACTIVITY_KIND_LABELS[k]);
+        html += `<li><span style="font-size:11px;font-weight:700;color:#991b1b;">${label}</span> ${escHtml(formatActivityEntryPlainText(e))}</li>`;
       });
       html += '</ul></div>';
     });
@@ -431,7 +438,7 @@ function generateLowlightsHTML(reports: WeeklyReport[], activityLog: ActivityLog
 // Improved version with better spacing and market-based structure
 function generateLowlightsHTML_Improved(reports: WeeklyReport[], activityLog: ActivityLogEntry[]): string {
   const atRiskMarkets = getMarketStatusData(reports).filter(m => m.status === 'yellow' || m.status === 'red');
-  const escalations = activityLog.filter(a => a.category === 'Escalation');
+  const escalations = activityLog.filter(a => isActivityLowlightKind(resolveActivityKind(a)));
   
   let html = '';
   
@@ -453,8 +460,9 @@ function generateLowlightsHTML_Improved(reports: WeeklyReport[], activityLog: Ac
     
     // Group escalations by market
     const escalationsByMarket = escalations.reduce((acc, e) => {
-      if (!acc[e.market]) acc[e.market] = [];
-      acc[e.market].push(e);
+      const m = displayMarketLabel(e.market);
+      if (!acc[m]) acc[m] = [];
+      acc[m].push(e);
       return acc;
     }, {} as Record<string, ActivityLogEntry[]>);
     
@@ -465,7 +473,9 @@ function generateLowlightsHTML_Improved(reports: WeeklyReport[], activityLog: Ac
       html += '<ul style="margin: 0; padding-left: 20px; line-height: 1.6;">';
       entries.forEach(e => {
         const dateStr = e.weekOf ? new Date(e.weekOf).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) : '';
-        html += `<li style="margin: 5px 0; color: #4b5563;">${escHtml(e.details)} <span style="color: #9ca3af; font-size: 11px;">(${dateStr})</span></li>`;
+        const k = resolveActivityKind(e);
+        const label = escHtml(ACTIVITY_KIND_LABELS[k]);
+        html += `<li style="margin: 5px 0; color: #4b5563;"><span style="font-size:11px;font-weight:700;color:#991b1b;">${label}</span> ${escHtml(formatActivityEntryPlainText(e))} <span style="color: #9ca3af; font-size: 11px;">(${dateStr})</span></li>`;
       });
       html += '</ul></div>';
     });

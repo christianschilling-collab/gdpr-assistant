@@ -36,6 +36,10 @@ import {
   generateIncidentCSV,
   downloadCSV,
 } from '@/lib/utils/exportIncident';
+import {
+  resolveAssigneeInputToStoredEmail,
+  BOARD_UNASSIGNED,
+} from '@/lib/board/assigneeEmailDirectory';
 
 const STATUS_FLOW: IncidentStatus[] = [
   'Reporting',
@@ -74,6 +78,8 @@ export default function IncidentDetailPage() {
   const [preventiveMeasures, setPreventiveMeasures] = useState('');
   const [workaroundCS, setWorkaroundCS] = useState('');
   const [legalReasoning, setLegalReasoning] = useState('');
+  const [assignedToDraft, setAssignedToDraft] = useState('');
+  const [savingAssignedTo, setSavingAssignedTo] = useState(false);
 
   useEffect(() => {
     console.log('🎯 useEffect triggered, incidentId:', incidentId);
@@ -128,6 +134,7 @@ export default function IncidentDetailPage() {
       setPreventiveMeasures(incidentData.preventiveMeasures || '');
       setWorkaroundCS(incidentData.workaroundCS || '');
       setLegalReasoning(incidentData.legalReasoning || '');
+      setAssignedToDraft((incidentData.assignedTo || '').trim());
     } catch (error) {
       console.error('Error loading incident:', error);
       addToast('Failed to load incident data', 'error');
@@ -215,6 +222,33 @@ export default function IncidentDetailPage() {
     }
   }
   
+  async function handleSaveAssignedTo() {
+    if (!incident) return;
+    setSavingAssignedTo(true);
+    try {
+      const raw = assignedToDraft.trim();
+      const resolved = await resolveAssigneeInputToStoredEmail(raw);
+      if (raw && !raw.includes('@') && resolved === BOARD_UNASSIGNED) {
+        addToast(
+          'Kein passendes Benutzerprofil: bitte Arbeits-E-Mail eintragen (oder in Admin → Users anlegen).',
+          'warning'
+        );
+      }
+      const next = resolved === BOARD_UNASSIGNED ? 'Unassigned' : resolved;
+      await updateIncidentField(incident.id, 'assignedTo', next, userEmail);
+      setIncident({ ...incident, assignedTo: next });
+      setAssignedToDraft(next === 'Unassigned' ? '' : next);
+      addToast('Assigned agent saved.', 'success');
+      await new Promise((r) => setTimeout(r, 400));
+      await loadIncidentData();
+    } catch (error) {
+      console.error('Error saving assigned agent:', error);
+      addToast('Failed to save assigned agent', 'error');
+    } finally {
+      setSavingAssignedTo(false);
+    }
+  }
+
   async function handleSaveField(fieldName: string, value: string) {
     if (!incident) return;
     
@@ -222,7 +256,7 @@ export default function IncidentDetailPage() {
     
     setUpdating(true);
     try {
-      await updateIncidentField(incident.id, fieldName, value, userEmail);
+      await updateIncidentField(incident.id, fieldName as keyof Incident, value as never, userEmail);
       
       // Update local incident state immediately (optimistic update)
       setIncident({
@@ -240,6 +274,7 @@ export default function IncidentDetailPage() {
         preventiveMeasures: 'Preventive Measures',
         workaroundCS: 'CS Workaround',
         legalReasoning: 'Legal Reasoning',
+        assignedTo: 'Assigned agent',
       };
       
       const displayName = fieldDisplayNames[fieldName] || fieldName;
@@ -898,6 +933,39 @@ export default function IncidentDetailPage() {
 
             {/* Right Column */}
             <div className="space-y-6">
+              <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
+                <h2 className="text-xl font-bold text-gray-900 mb-3">Assigned agent</h2>
+                <p className="text-xs text-gray-500 mb-3">
+                  Shown on the GDPR trackboard. Use a short name or work email.
+                </p>
+                <input
+                  type="text"
+                  value={assignedToDraft}
+                  onChange={(e) => setAssignedToDraft(e.target.value)}
+                  placeholder="Name or email"
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm text-gray-900 focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                />
+                <div className="flex flex-wrap gap-2 mt-3">
+                  {user?.email && (
+                    <button
+                      type="button"
+                      onClick={() => setAssignedToDraft(user.email || '')}
+                      className="px-3 py-1.5 text-xs bg-gray-100 text-gray-800 rounded-lg hover:bg-gray-200"
+                    >
+                      Use my account
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    onClick={handleSaveAssignedTo}
+                    disabled={savingAssignedTo}
+                    className="px-3 py-1.5 text-xs font-semibold bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50"
+                  >
+                    {savingAssignedTo ? 'Saving…' : 'Save'}
+                  </button>
+                </div>
+              </div>
+
               {/* Tasks */}
               <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
                 <h2 className="text-xl font-bold text-gray-900 mb-4">Action Plan</h2>

@@ -404,6 +404,36 @@ export interface AgentTrainingRecord {
 }
 
 // Weekly Reporting Types
+/** Structured weekly narrative items (web form); each becomes one activityLog document. */
+export const ACTIVITY_LOG_KINDS = [
+  'win',
+  'initiative',
+  'noteworthy',
+  'observation',
+  'complaint',
+  'privacy_incident',
+  'escalation',
+] as const;
+
+export type ActivityLogKind = (typeof ACTIVITY_LOG_KINDS)[number];
+
+/** Short labels for UI (form dropdown, email badges). */
+export const ACTIVITY_KIND_LABELS: Record<ActivityLogKind, string> = {
+  win: 'Win / good news',
+  initiative: 'Initiative',
+  noteworthy: 'Noteworthy',
+  observation: 'Observation',
+  complaint: 'Complaint',
+  privacy_incident: 'Privacy incident (narrative)',
+  escalation: 'Escalation',
+};
+
+export interface WeeklyReportActivityItem {
+  kind: ActivityLogKind;
+  title: string;
+  description: string;
+}
+
 export interface WeeklyReport {
   id: string;
   market: 'DACH' | 'NL' | 'France' | 'Be / Lux' | 'Nordics';
@@ -425,6 +455,8 @@ export interface WeeklyReport {
   supportNeeded?: string;
   winsGoodNews?: string;
   anythingElse?: string;
+  /** When set (non-empty after save), replaces legacy text fields for activity log generation. */
+  activityItems?: WeeklyReportActivityItem[];
   createdAt: Date;
   updatedAt: Date;
 }
@@ -434,6 +466,9 @@ export interface ActivityLogEntry {
   market: string;
   weekOf: Date;
   category: 'Initiative' | 'Escalation';
+  /** When set, drives grouping in UI and email (legacy rows infer from category / ✅ prefix). */
+  kind?: ActivityLogKind;
+  title?: string;
   details: string;
   createdAt: Date;
 }

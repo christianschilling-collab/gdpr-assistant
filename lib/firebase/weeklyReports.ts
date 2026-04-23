@@ -14,6 +14,7 @@ import {
   setDoc,
 } from 'firebase/firestore';
 import { WeeklyReport, ActivityLogEntry } from '../types';
+import { isValidActivityKind, kindToCategory } from '../reporting/activityLogKinds';
 
 // Import Firebase getDb function
 import { getDb } from './config';
@@ -29,6 +30,11 @@ function getFirestore() {
   return db;
 }
 
+/** Firestore rejects `undefined` field values; omit those keys before write. */
+function omitUndefinedFields<T extends Record<string, unknown>>(obj: T): Record<string, unknown> {
+  return Object.fromEntries(Object.entries(obj).filter(([, v]) => v !== undefined));
+}
+
 // ============================================
 // WEEKLY REPORTS CRUD
 // ============================================
@@ -37,12 +43,15 @@ export async function createWeeklyReport(reportData: Omit<WeeklyReport, 'id' | '
   try {
     const db = getFirestore();
     const weeklyReportsRef = collection(db, 'weeklyReports');
-    const docRef = await addDoc(weeklyReportsRef, {
-      ...reportData,
-      weekOf: Timestamp.fromDate(reportData.weekOf),
-      createdAt: Timestamp.now(),
-      updatedAt: Timestamp.now(),
-    });
+    const docRef = await addDoc(
+      weeklyReportsRef,
+      omitUndefinedFields({
+        ...reportData,
+        weekOf: Timestamp.fromDate(reportData.weekOf),
+        createdAt: Timestamp.now(),
+        updatedAt: Timestamp.now(),
+      }) as Record<string, unknown>
+    );
     return docRef.id;
   } catch (error) {
     console.error('Error creating weekly report:', error);
@@ -56,7 +65,7 @@ export async function getWeeklyReports(marketFilter?: string, startDate?: Date, 
     let q = query(
       collection(db, 'weeklyReports'), 
       orderBy('weekOf', 'desc'),
-      limit(100)
+      limit(500)
     );
 
     const snapshot = await getDocs(q);
@@ -134,11 +143,14 @@ export async function deleteWeeklyReport(id: string): Promise<void> {
 export async function createActivityLogEntry(entryData: Omit<ActivityLogEntry, 'id' | 'createdAt'>): Promise<string> {
   try {
     const db = getFirestore();
-    const docRef = await addDoc(collection(db, 'activityLog'), {
-      ...entryData,
-      weekOf: Timestamp.fromDate(entryData.weekOf),
-      createdAt: Timestamp.now(),
-    });
+    const docRef = await addDoc(
+      collection(db, 'activityLog'),
+      omitUndefinedFields({
+        ...entryData,
+        weekOf: Timestamp.fromDate(entryData.weekOf),
+        createdAt: Timestamp.now(),
+      }) as Record<string, unknown>
+    );
     return docRef.id;
   } catch (error) {
     console.error('Error creating activity log entry:', error);
@@ -152,7 +164,7 @@ export async function getActivityLog(marketFilter?: string, startDate?: Date, en
     let q = query(
       collection(db, 'activityLog'), 
       orderBy('weekOf', 'desc'),
-      limit(200)
+      limit(500)
     );
 
     const snapshot = await getDocs(q);
@@ -176,13 +188,46 @@ export async function getActivityLog(marketFilter?: string, startDate?: Date, en
   }
 }
 
+/** Admin: correct typos or counts on a single activity-log line (does not re-run weekly upsert). */
+export async function updateActivityLogEntry(
+  id: string,
+  updates: Partial<Pick<ActivityLogEntry, 'details' | 'title' | 'kind' | 'category' | 'market' | 'weekOf'>>
+): Promise<void> {
+  try {
+    const db = getFirestore();
+    const docRef = doc(db, 'activityLog', id);
+    const patch: Record<string, unknown> = { ...updates };
+    if (updates.weekOf) {
+      patch.weekOf = Timestamp.fromDate(updates.weekOf);
+    }
+    if (updates.kind && updates.category === undefined) {
+      patch.category = kindToCategory(updates.kind);
+    }
+    await updateDoc(docRef, omitUndefinedFields(patch) as Record<string, unknown>);
+  } catch (error) {
+    console.error('Error updating activity log entry:', error);
+    throw error;
+  }
+}
+
+/** Admin: remove a single activity-log document. */
+export async function deleteActivityLogEntry(id: string): Promise<void> {
+  try {
+    const db = getFirestore();
+    await deleteDoc(doc(db, 'activityLog', id));
+  } catch (error) {
+    console.error('Error deleting activity log entry:', error);
+    throw error;
+  }
+}
+
 // ============================================
-// BULK IMPORT FROM CSV (with UPSERT logic)
+// WEEKLY REPORT UPSERT (deterministic ID per market + week)
 // ============================================
 
 /**
  * Generate a deterministic ID for a weekly report based on market and week
- * This allows us to upsert (update if exists, create if not)
+ * (update if exists, create if not)
  */
 function generateReportId(market: string, weekOf: Date): string {
   const year = weekOf.getFullYear();
@@ -195,9 +240,9 @@ function generateReportId(market: string, weekOf: Date): string {
 }
 
 /**
- * Delete existing activity log entries for a specific report (market + week)
+ * Delete all activity-log documents for this market + week (used before regenerating from a weekly report).
  */
-async function deleteActivityLogForReport(market: string, weekOf: Date): Promise<void> {
+export async function deleteActivityLogForReport(market: string, weekOf: Date): Promise<void> {
   try {
     const db = getFirestore();
     // Query for all activity log entries matching this market and week
@@ -224,7 +269,7 @@ async function deleteActivityLogForReport(market: string, weekOf: Date): Promise
  * Upsert a weekly report (create if new, update if exists)
  * Also creates/updates activity log entries from text fields
  */
-/** Create or replace the report for this market + week (same ID as CSV import); refreshes activity log from text fields. */
+/** Create or replace the report for this market + week; refreshes activity log from structured items or legacy text fields. */
 export async function upsertWeeklyReport(
   reportData: Omit<WeeklyReport, 'id' | 'createdAt' | 'updatedAt'>
 ): Promise<{ created: boolean; id: string }> {
@@ -251,9 +296,9 @@ export async function upsertWeeklyReport(
       // Existing document - keep original createdAt
       data.createdAt = docSnap.data()?.createdAt || timestamp;
     }
-    
+
     // Use setDoc to create or update (no merge needed, we want to replace)
-    await setDoc(docRef, data);
+    await setDoc(docRef, omitUndefinedFields(data) as Record<string, unknown>);
     
     // Always regenerate Activity Log entries (delete old ones first for updates)
     await deleteActivityLogForReport(reportData.market, reportData.weekOf);
@@ -270,39 +315,67 @@ export async function upsertWeeklyReport(
  * Generate Activity Log entries from report text fields
  */
 async function generateActivityLogEntries(reportData: Omit<WeeklyReport, 'id' | 'createdAt' | 'updatedAt'>): Promise<void> {
+  const structured = (reportData.activityItems ?? []).filter(
+    item =>
+      item &&
+      isValidActivityKind(item.kind) &&
+      (item.description?.trim() || item.title?.trim())
+  );
+
+  if (structured.length > 0) {
+    for (const item of structured) {
+      const title = (item.title || '').trim();
+      const desc = (item.description || '').trim();
+      const details = desc || title;
+      if (!details) continue;
+      try {
+        await createActivityLogEntry({
+          market: reportData.market,
+          weekOf: reportData.weekOf,
+          category: kindToCategory(item.kind),
+          kind: item.kind,
+          title: title || undefined,
+          details,
+        });
+      } catch (error) {
+        console.error('Failed to create activity log entry:', error);
+      }
+    }
+    return;
+  }
+
   const entries: Omit<ActivityLogEntry, 'id' | 'createdAt'>[] = [];
-  
-  // Escalation Details → Escalation entry
+
   if (reportData.escalationDetails && reportData.escalationDetails.trim() !== '' && reportData.escalationDetails !== '—') {
     entries.push({
       market: reportData.market,
       weekOf: reportData.weekOf,
       category: 'Escalation',
+      kind: 'escalation',
       details: reportData.escalationDetails.trim(),
     });
   }
-  
-  // Current Initiatives → Initiative entry
+
   if (reportData.currentInitiatives && reportData.currentInitiatives.trim() !== '' && reportData.currentInitiatives !== '—') {
     entries.push({
       market: reportData.market,
       weekOf: reportData.weekOf,
       category: 'Initiative',
+      kind: 'initiative',
       details: reportData.currentInitiatives.trim(),
     });
   }
-  
-  // Wins/Good News → Initiative entry
+
   if (reportData.winsGoodNews && reportData.winsGoodNews.trim() !== '' && reportData.winsGoodNews !== '—') {
     entries.push({
       market: reportData.market,
       weekOf: reportData.weekOf,
       category: 'Initiative',
+      kind: 'win',
       details: `✅ ${reportData.winsGoodNews.trim()}`,
     });
   }
-  
-  // Save all entries
+
   for (const entry of entries) {
     try {
       await createActivityLogEntry(entry);
@@ -310,30 +383,6 @@ async function generateActivityLogEntries(reportData: Omit<WeeklyReport, 'id' | 
       console.error('Failed to create activity log entry:', error);
     }
   }
-}
-
-export async function bulkImportWeeklyReports(reports: Omit<WeeklyReport, 'id' | 'createdAt' | 'updatedAt'>[]): Promise<{ success: number; failed: number; created: number; updated: number }> {
-  let success = 0;
-  let failed = 0;
-  let created = 0;
-  let updated = 0;
-
-  for (const report of reports) {
-    try {
-      const result = await upsertWeeklyReport(report);
-      success++;
-      if (result.created) {
-        created++;
-      } else {
-        updated++;
-      }
-    } catch (error) {
-      console.error('Failed to import report:', error);
-      failed++;
-    }
-  }
-
-  return { success, failed, created, updated };
 }
 
 // ============================================
@@ -363,9 +412,26 @@ function docToWeeklyReport(doc: any): WeeklyReport {
     supportNeeded: data.supportNeeded,
     winsGoodNews: data.winsGoodNews,
     anythingElse: data.anythingElse,
+    activityItems: parseActivityItemsFromFirestore(data.activityItems),
     createdAt: data.createdAt?.toDate() || new Date(),
     updatedAt: data.updatedAt?.toDate() || new Date(),
   };
+}
+
+function parseActivityItemsFromFirestore(raw: unknown): WeeklyReport['activityItems'] {
+  if (!Array.isArray(raw)) return undefined;
+  const out: NonNullable<WeeklyReport['activityItems']> = [];
+  for (const row of raw) {
+    if (!row || typeof row !== 'object') continue;
+    const r = row as Record<string, unknown>;
+    if (typeof r.kind !== 'string' || !isValidActivityKind(r.kind)) continue;
+    out.push({
+      kind: r.kind,
+      title: typeof r.title === 'string' ? r.title : '',
+      description: typeof r.description === 'string' ? r.description : '',
+    });
+  }
+  return out.length > 0 ? out : undefined;
 }
 
 function docToActivityLogEntry(doc: any): ActivityLogEntry {
@@ -374,8 +440,10 @@ function docToActivityLogEntry(doc: any): ActivityLogEntry {
     id: doc.id,
     market: data.market,
     weekOf: data.weekOf?.toDate() || new Date(),
-    category: data.category,
-    details: data.details,
+    category: data.category === 'Escalation' || data.category === 'Initiative' ? data.category : 'Initiative',
+    kind: typeof data.kind === 'string' && isValidActivityKind(data.kind) ? data.kind : undefined,
+    title: typeof data.title === 'string' ? data.title : undefined,
+    details: data.details ?? '',
     createdAt: data.createdAt?.toDate() || new Date(),
   };
 }

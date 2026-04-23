@@ -38,9 +38,15 @@ export function clearRecentCases() {
   localStorage.removeItem('recentCases');
 }
 
-export function formatRecentCaseTime(timestamp: number): string {
+export function formatRecentCaseTime(timestamp: number | undefined): string {
+  if (timestamp == null || !Number.isFinite(timestamp)) {
+    return '';
+  }
   const now = new Date();
   const caseDate = new Date(timestamp);
+  if (!Number.isFinite(caseDate.getTime())) {
+    return '';
+  }
   
   // Check if today
   const isToday = 

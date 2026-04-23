@@ -1,5 +1,20 @@
 import type { WeeklyReport } from '@/lib/types';
 import type { ActivityLogEntry } from '@/lib/types';
+import {
+  resolveActivityKind,
+  isActivityLowlightKind,
+  formatActivityEntryPlainText,
+  displayMarketLabel,
+} from '@/lib/reporting/activityLogKinds';
+import { REPORT_MARKETS, reportMatchesChartMarket, type ReportMarketKey } from '@/lib/reporting/yearAggregates';
+
+function riskRank(s: string): number {
+  return { red: 3, yellow: 2, green: 1 }[s] ?? 0;
+}
+
+function worseRiskStatus(a: WeeklyReport['riskStatus'], b: WeeklyReport['riskStatus']): WeeklyReport['riskStatus'] {
+  return riskRank(b) > riskRank(a) ? b : a;
+}
 
 export function formatMonthDisplay(monthKey: string): string {
   const [year, month] = monthKey.split('-');
@@ -8,10 +23,8 @@ export function formatMonthDisplay(monthKey: string): string {
 }
 
 export function getMarketBreakdown(reports: WeeklyReport[]) {
-  const markets = ['DACH', 'France', 'Nordics', 'NL', 'Be / Lux'];
-
-  return markets.map(market => {
-    const marketReports = reports.filter(r => r.market === market);
+  return (REPORT_MARKETS as readonly ReportMarketKey[]).map(market => {
+    const marketReports = reports.filter(r => reportMatchesChartMarket(r, market));
 
     const latestReport =
       marketReports.length > 0
@@ -40,7 +53,9 @@ export function calculateMonthlySummary(reports: WeeklyReport[], month: string) 
     0
   );
   const marketsAtRisk = new Set(
-    reports.filter(r => r.riskStatus === 'yellow' || r.riskStatus === 'red').map(r => r.market)
+    reports
+      .filter(r => r.riskStatus === 'yellow' || r.riskStatus === 'red')
+      .map(r => displayMarketLabel(r.market))
   ).size;
   const avgBacklog =
     reports.length > 0 ? reports.reduce((sum, r) => sum + r.currentBacklog, 0) / reports.length : 0;
@@ -65,13 +80,39 @@ export function getMarketStatusData(reports: WeeklyReport[]) {
     }
   });
 
-  return Array.from(marketMap.values()).map(r => ({
-    market: r.market,
-    status: r.riskStatus,
-    reason:
-      r.riskExplanation ||
-      (r.riskStatus === 'green' ? 'All systems operational' : 'No explanation provided'),
-  }));
+  return (REPORT_MARKETS as readonly ReportMarketKey[]).map(dm => {
+    const latestForDisplay: WeeklyReport[] =
+      dm === 'BNL'
+        ? (['NL', 'Be / Lux'] as const).map(m => marketMap.get(m)).filter((r): r is WeeklyReport => Boolean(r))
+        : marketMap.get(dm)
+          ? [marketMap.get(dm)!]
+          : [];
+
+    if (latestForDisplay.length === 0) {
+      return {
+        market: dm,
+        status: 'green' as const,
+        reason: 'No weekly data',
+      };
+    }
+
+    let status: WeeklyReport['riskStatus'] = 'green';
+    for (const r of latestForDisplay) {
+      status = worseRiskStatus(status, r.riskStatus);
+    }
+
+    const reasons = latestForDisplay.map(
+      r =>
+        r.riskExplanation ||
+        (r.riskStatus === 'green' ? 'All systems operational' : 'No explanation provided')
+    );
+
+    return {
+      market: dm,
+      status,
+      reason: [...new Set(reasons)].join(' · '),
+    };
+  });
 }
 
 export function getGreenMarkets(reports: WeeklyReport[]) {
@@ -84,12 +125,22 @@ export function getGreenMarkets(reports: WeeklyReport[]) {
     }
   });
 
-  return Array.from(marketMap.values())
-    .filter(r => r.riskStatus === 'green')
-    .map(r => ({
-      market: r.market,
-      requests: r.deletionRequests + r.portabilityRequests,
-    }));
+  return (REPORT_MARKETS as readonly ReportMarketKey[]).filter(dm => {
+    const latest =
+      dm === 'BNL'
+        ? (['NL', 'Be / Lux'] as const).map(m => marketMap.get(m)).filter((r): r is WeeklyReport => Boolean(r))
+        : marketMap.get(dm)
+          ? [marketMap.get(dm)!]
+          : [];
+    return latest.length > 0 && latest.every(r => r.riskStatus === 'green');
+  }).map(dm => {
+    const latest =
+      dm === 'BNL'
+        ? (['NL', 'Be / Lux'] as const).map(m => marketMap.get(m)).filter((r): r is WeeklyReport => Boolean(r))
+        : [marketMap.get(dm)!];
+    const requests = latest.reduce((s, r) => s + r.deletionRequests + r.portabilityRequests, 0);
+    return { market: dm, requests };
+  });
 }
 
 export function extractHighlights(reports: WeeklyReport[], activityLog: ActivityLogEntry[]) {
@@ -97,22 +148,25 @@ export function extractHighlights(reports: WeeklyReport[], activityLog: Activity
   const positive: string[] = [];
 
   reports.forEach(r => {
+    const m = displayMarketLabel(r.market);
     if (r.riskStatus === 'red') {
-      negative.push(`${r.market}: Red status${r.escalationDetails ? ` - ${r.escalationDetails}` : ''}`);
+      negative.push(`${m}: Red status${r.escalationDetails ? ` - ${r.escalationDetails}` : ''}`);
     }
     if (r.legalEscalations > 0) {
-      negative.push(`${r.market}: ${r.legalEscalations} legal escalation(s)`);
+      negative.push(`${m}: ${r.legalEscalations} legal escalation(s)`);
     }
     if (r.riskStatus === 'green' && r.deletionRequests + r.portabilityRequests > 0) {
-      positive.push(`${r.market}: All green, ${r.deletionRequests + r.portabilityRequests} requests handled`);
+      positive.push(`${m}: All green, ${r.deletionRequests + r.portabilityRequests} requests handled`);
     }
   });
 
   activityLog.forEach(a => {
-    if (a.category === 'Escalation') {
-      negative.push(`${a.market}: ${a.details}`);
-    } else if (a.details.startsWith('✅')) {
-      positive.push(`${a.market}: ${a.details.replace('✅ ', '')}`);
+    const m = displayMarketLabel(a.market);
+    const k = resolveActivityKind(a);
+    if (isActivityLowlightKind(k)) {
+      negative.push(`${m}: ${formatActivityEntryPlainText(a)}`);
+    } else {
+      positive.push(`${m}: ${formatActivityEntryPlainText(a).replace(/^\u2705\s*/, '')}`);
     }
   });
 

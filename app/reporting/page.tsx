@@ -1,13 +1,24 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import Link from 'next/link';
 import { getWeeklyReports, getActivityLog } from '@/lib/firebase/weeklyReports';
 import { generateTrainingReport } from '@/lib/firebase/trainingCases';
-import { WeeklyReport, ActivityLogEntry } from '@/lib/types';
+import { ACTIVITY_KIND_LABELS, type ActivityLogKind, type WeeklyReport, type ActivityLogEntry } from '@/lib/types';
 import { TrainingReport } from '@/lib/types/training';
 import { MarketDeepDive, MarketData } from '@/lib/types/marketDeepDive';
-import { BarChart, Bar, LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts';
+import {
+  Line,
+  LineChart,
+  XAxis,
+  YAxis,
+  CartesianGrid,
+  Tooltip,
+  Legend,
+  ResponsiveContainer,
+  Area,
+  AreaChart,
+} from 'recharts';
 import { useToast } from '@/lib/contexts/ToastContext';
 import { buildMergedMarketDeepDive } from '@/lib/reporting/marketDeepDiveMerge';
 import {
@@ -18,24 +29,45 @@ import {
   getMarketStatusData,
 } from '@/lib/reporting/reportMetrics';
 import { generateMonthlySummaryHTML, translateErrorDescription } from '@/lib/reporting/gdprEmailReport';
-
-type ViewMode = 'week' | 'month';
+import {
+  generateActivityLogPlainText,
+  resolveActivityKind,
+  isActivityHighlightKind,
+  isActivityLowlightKind,
+  displayMarketLabel,
+  activityKindBadgeClass,
+} from '@/lib/reporting/activityLogKinds';
+import { useAuth } from '@/lib/contexts/AuthContext';
+import {
+  REPORT_MARKETS,
+  buildYearChartRows,
+  reportMatchesChartMarket,
+  reportsInCalendarYear,
+} from '@/lib/reporting/yearAggregates';
 
 export default function ReportingPage() {
   const { showToast } = useToast();
+  const { isAdmin } = useAuth();
   const [reports, setReports] = useState<WeeklyReport[]>([]);
   const [activityLog, setActivityLog] = useState<ActivityLogEntry[]>([]);
   const [trainingReport, setTrainingReport] = useState<TrainingReport | null>(null);
   const [marketDeepDive, setMarketDeepDive] = useState<MarketDeepDive | null>(null);
   const [previousMonthDeepDive, setPreviousMonthDeepDive] = useState<MarketDeepDive | null>(null);
   const [loading, setLoading] = useState(true);
-  const [selectedMarket, setSelectedMarket] = useState<string>('all');
-  const [viewMode, setViewMode] = useState<ViewMode>('month');
-  const [selectedMonth, setSelectedMonth] = useState<string>(getCurrentMonth());
+  const [selectedYear, setSelectedYear] = useState(() => new Date().getFullYear());
+  /** 1–12: month used for GDPR/MBR export, deep dive, and highlight cards (same calendar year as `selectedYear`). */
+  const [reportMonth, setReportMonth] = useState(() => new Date().getMonth() + 1);
+  const exportMonthKey = `${selectedYear}-${String(reportMonth).padStart(2, '0')}`;
+  const [eventMarket, setEventMarket] = useState<string>('all');
+  const [eventKind, setEventKind] = useState<string>('all');
+  const [eventSortDesc, setEventSortDesc] = useState(true);
+  const [chartMarketsOn, setChartMarketsOn] = useState<Record<string, boolean>>(() =>
+    Object.fromEntries(REPORT_MARKETS.map(m => [m, true]))
+  );
 
   useEffect(() => {
     loadData();
-  }, [selectedMonth]);
+  }, [exportMonthKey]);
 
   const loadData = async () => {
     setLoading(true);
@@ -49,10 +81,10 @@ export default function ReportingPage() {
 
       // Load training report for the selected month
       try {
-        const [year, month] = selectedMonth.split('-').map(Number);
+        const [year, month] = exportMonthKey.split('-').map(Number);
         const prevDate = new Date(year, month - 2, 1);
         const previousMonth = `${prevDate.getFullYear()}-${String(prevDate.getMonth() + 1).padStart(2, '0')}`;
-        const trainingData = await generateTrainingReport(selectedMonth, previousMonth);
+        const trainingData = await generateTrainingReport(exportMonthKey, previousMonth);
         setTrainingReport(trainingData);
       } catch (err) {
         console.log('No training data available for this month');
@@ -61,10 +93,10 @@ export default function ReportingPage() {
 
       // Load market deep dive for selected month + previous month (MoM in UI / GDPR report)
       try {
-        const prevMonthKey = getPreviousMonth(selectedMonth);
+        const prevMonthKey = getPreviousMonth(exportMonthKey);
         console.log('Aggregating market deep dive data (current + previous month)...');
         const [currentDive, prevDive] = await Promise.all([
-          buildMergedMarketDeepDive(selectedMonth),
+          buildMergedMarketDeepDive(exportMonthKey),
           buildMergedMarketDeepDive(prevMonthKey),
         ]);
         setMarketDeepDive(currentDive);
@@ -82,49 +114,194 @@ export default function ReportingPage() {
     }
   };
 
-  // Get current month in YYYY-MM format
-  function getCurrentMonth(): string {
-    const now = new Date();
-    return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
-  }
+  const reportsYearAll = useMemo(
+    () => reportsInCalendarYear(reports, selectedYear),
+    [reports, selectedYear]
+  );
 
-  // Filter reports based on view mode and selected period
-  const filteredReports = reports.filter(report => {
-    if (selectedMarket !== 'all' && report.market !== selectedMarket) return false;
-    
-    if (viewMode === 'month') {
-      const reportMonth = formatMonthKey(report.weekOf);
-      return reportMonth === selectedMonth;
-    }
-    
-    return true;
-  });
+  const reportsExportMonth = useMemo(
+    () => reports.filter(r => formatMonthKey(r.weekOf) === exportMonthKey),
+    [reports, exportMonthKey]
+  );
 
-  // Calculate Monthly Summary
-  const monthlySummary = calculateMonthlySummary(filteredReports, selectedMonth);
-  
-  // Get previous month for comparison
-  const previousMonth = getPreviousMonth(selectedMonth);
-  const previousMonthReports = reports.filter(r => formatMonthKey(r.weekOf) === previousMonth);
-  const previousMonthlySummary = calculateMonthlySummary(previousMonthReports, previousMonth);
+  const activityExportMonth = useMemo(
+    () => activityLog.filter(a => formatMonthKey(a.weekOf) === exportMonthKey),
+    [activityLog, exportMonthKey]
+  );
 
-  // Calculate Highlights & Lowlights
-  const highlights = extractHighlights(filteredReports, activityLog.filter(a => formatMonthKey(a.weekOf) === selectedMonth));
+  const monthlySummary = calculateMonthlySummary(reportsExportMonth, exportMonthKey);
 
-  // Prepare chart data
-  const trendsData = prepareTrendsData(reports, selectedMonth);
+  const previousMonthKey = getPreviousMonth(exportMonthKey);
+  const previousMonthReports = reports.filter(r => formatMonthKey(r.weekOf) === previousMonthKey);
+  const previousMonthlySummary = calculateMonthlySummary(previousMonthReports, previousMonthKey);
 
-  // Filter activity log
-  const filteredActivityLog = activityLog.filter(entry => {
-    if (selectedMarket !== 'all' && entry.market !== selectedMarket) return false;
-    if (viewMode === 'month') {
-      return formatMonthKey(entry.weekOf) === selectedMonth;
-    }
-    return true;
-  });
+  const highlights = extractHighlights(reportsExportMonth, activityExportMonth);
+
+  const chartRows = useMemo(() => buildYearChartRows(reportsYearAll, selectedYear), [reportsYearAll, selectedYear]);
+
+  const activityInYear = useMemo(() => {
+    return activityLog.filter(e => {
+      if (new Date(e.weekOf).getFullYear() !== selectedYear) return false;
+      if (eventMarket !== 'all') {
+        if (eventMarket === 'BNL') {
+          if (e.market !== 'NL' && e.market !== 'Be / Lux') return false;
+        } else if (e.market !== eventMarket) {
+          return false;
+        }
+      }
+      if (eventKind !== 'all' && resolveActivityKind(e) !== eventKind) return false;
+      return true;
+    });
+  }, [activityLog, selectedYear, eventMarket, eventKind]);
+
+  const eventsSorted = useMemo(() => {
+    const arr = [...activityInYear];
+    arr.sort((a, b) =>
+      eventSortDesc ? b.weekOf.getTime() - a.weekOf.getTime() : a.weekOf.getTime() - b.weekOf.getTime()
+    );
+    return arr;
+  }, [activityInYear, eventSortDesc]);
+
+  const prevYearReports = useMemo(
+    () => reportsInCalendarYear(reports, selectedYear - 1),
+    [reports, selectedYear]
+  );
+  const prevChartRows = useMemo(
+    () => buildYearChartRows(prevYearReports, selectedYear - 1),
+    [prevYearReports, selectedYear]
+  );
+
+  const monthlyTotalRequests = useMemo(
+    () =>
+      chartRows.map(r =>
+        REPORT_MARKETS.reduce((sum, mk) => sum + (r[mk] as number), 0)
+      ),
+    [chartRows]
+  );
+  const ytdTotalRequests = useMemo(() => monthlyTotalRequests.reduce((a, b) => a + b, 0), [monthlyTotalRequests]);
+  const sparklineData = useMemo(
+    () => monthlyTotalRequests.map((v, i) => ({ i, v })),
+    [monthlyTotalRequests]
+  );
+
+  const ytdDeletions = useMemo(
+    () => reportsYearAll.reduce((s, r) => s + r.deletionRequests, 0),
+    [reportsYearAll]
+  );
+  const ytdPortability = useMemo(
+    () => reportsYearAll.reduce((s, r) => s + r.portabilityRequests, 0),
+    [reportsYearAll]
+  );
+  const ytdLegal = useMemo(
+    () =>
+      reportsYearAll.reduce(
+        (s, r) => s + r.legalEscalations + r.regulatorInquiries + r.privacyIncidents,
+        0
+      ),
+    [reportsYearAll]
+  );
+
+  const prevYtdTotal = useMemo(
+    () =>
+      prevChartRows.reduce(
+        (sum, r) => sum + REPORT_MARKETS.reduce((s, mk) => s + (r[mk] as number), 0),
+        0
+      ),
+    [prevChartRows]
+  );
+
+  const marketPerformanceRows = useMemo(() => {
+    const totals = REPORT_MARKETS.map(mk =>
+      reportsYearAll
+        .filter(r => reportMatchesChartMarket(r, mk))
+        .reduce((s, r) => s + r.deletionRequests + r.portabilityRequests, 0)
+    );
+    const maxT = Math.max(...totals, 1);
+    return REPORT_MARKETS.map((mk, idx) => {
+      const total = totals[idx];
+      const prev = prevYearReports
+        .filter(r => reportMatchesChartMarket(r, mk))
+        .reduce((s, r) => s + r.deletionRequests + r.portabilityRequests, 0);
+      const del = reportsYearAll
+        .filter(r => reportMatchesChartMarket(r, mk))
+        .reduce((s, r) => s + r.deletionRequests, 0);
+      const port = reportsYearAll
+        .filter(r => reportMatchesChartMarket(r, mk))
+        .reduce((s, r) => s + r.portabilityRequests, 0);
+      return { mk, total, prev, del, port, barPct: (total / maxT) * 100 };
+    });
+  }, [reportsYearAll, prevYearReports]);
+
+  const LINE_COLORS: Record<string, string> = {
+    DACH: '#7c3aed',
+    France: '#0d9488',
+    Nordics: '#db2777',
+    BNL: '#0284c7',
+  };
+
+  const prevYtdDel = useMemo(
+    () => prevYearReports.reduce((s, r) => s + r.deletionRequests, 0),
+    [prevYearReports]
+  );
+  const prevYtdPort = useMemo(
+    () => prevYearReports.reduce((s, r) => s + r.portabilityRequests, 0),
+    [prevYearReports]
+  );
+  const prevYtdLegal = useMemo(
+    () =>
+      prevYearReports.reduce(
+        (s, r) => s + r.legalEscalations + r.regulatorInquiries + r.privacyIncidents,
+        0
+      ),
+    [prevYearReports]
+  );
+
+  const monthlyDelSpark = useMemo(() => {
+    const sums = Array.from({ length: 12 }, () => 0);
+    reportsYearAll.forEach(r => {
+      const d = new Date(r.weekOf);
+      if (d.getFullYear() !== selectedYear) return;
+      sums[d.getMonth()] += r.deletionRequests;
+    });
+    return sums;
+  }, [reportsYearAll, selectedYear]);
+
+  const delSparklineData = useMemo(
+    () => monthlyDelSpark.map((v, i) => ({ i, v })),
+    [monthlyDelSpark]
+  );
+
+  const monthlyPortSpark = useMemo(() => {
+    const sums = Array.from({ length: 12 }, () => 0);
+    reportsYearAll.forEach(r => {
+      const d = new Date(r.weekOf);
+      if (d.getFullYear() !== selectedYear) return;
+      sums[d.getMonth()] += r.portabilityRequests;
+    });
+    return sums;
+  }, [reportsYearAll, selectedYear]);
+  const portSparklineData = useMemo(
+    () => monthlyPortSpark.map((v, i) => ({ i, v })),
+    [monthlyPortSpark]
+  );
+
+  const monthlyLegalSpark = useMemo(() => {
+    const sums = Array.from({ length: 12 }, () => 0);
+    reportsYearAll.forEach(r => {
+      const d = new Date(r.weekOf);
+      if (d.getFullYear() !== selectedYear) return;
+      sums[d.getMonth()] +=
+        r.legalEscalations + r.regulatorInquiries + r.privacyIncidents;
+    });
+    return sums;
+  }, [reportsYearAll, selectedYear]);
+  const legalSparklineData = useMemo(
+    () => monthlyLegalSpark.map((v, i) => ({ i, v })),
+    [monthlyLegalSpark]
+  );
 
   async function copyActivityLog(activities: ActivityLogEntry[]) {
-    const text = generateActivityLogText(activities);
+    const text = generateActivityLogPlainText(activities);
     await navigator.clipboard.writeText(text);
     showToast('Activity log copied to clipboard.');
   }
@@ -141,21 +318,14 @@ export default function ReportingPage() {
     return `${prevYear}-${String(prevMonth).padStart(2, '0')}`;
   }
 
-  function getNextMonth(monthKey: string): string {
-    const [year, month] = monthKey.split('-').map(Number);
-    const nextMonth = month === 12 ? 1 : month + 1;
-    const nextYear = month === 12 ? year + 1 : year;
-    return `${nextYear}-${String(nextMonth).padStart(2, '0')}`;
-  }
-
   async function copyGdprReport() {
     const htmlSummary = generateMonthlySummaryHTML(
       monthlySummary,
       previousMonthlySummary,
       highlights,
-      selectedMonth,
-      filteredReports,
-      filteredActivityLog,
+      exportMonthKey,
+      reportsExportMonth,
+      activityExportMonth,
       trainingReport,
       marketDeepDive,
       previousMonthDeepDive
@@ -179,7 +349,7 @@ export default function ReportingPage() {
       return;
     }
     
-    const htmlReport = generateMBRReportHTML(selectedMonth, marketDeepDive.markets, marketDeepDive.significantIncidents, marketDeepDive.summaryAndOutlook || '');
+    const htmlReport = generateMBRReportHTML(exportMonthKey, marketDeepDive.markets, marketDeepDive.significantIncidents, marketDeepDive.summaryAndOutlook || '');
     
     // Create a temporary element to copy HTML
     const blob = new Blob([htmlReport], { type: 'text/html' });
@@ -196,48 +366,55 @@ export default function ReportingPage() {
   }
 
   function exportCSV() {
-    const csv = generateCSV(filteredReports);
+    const csv = generateCSV(reportsExportMonth);
     const blob = new Blob([csv], { type: 'text/csv' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `gdpr-report-${selectedMonth}.csv`;
+    a.download = `gdpr-report-${exportMonthKey}.csv`;
     a.click();
+  }
+
+  function formatYoy(cur: number, prev: number): string | null {
+    if (prev <= 0) return null;
+    const p = ((cur - prev) / prev) * 100;
+    return `${p > 0 ? '+' : ''}${p.toFixed(1)}%`;
   }
 
   if (loading) {
     return (
-      <div className="flex items-center justify-center min-h-screen">
+      <div className="flex min-h-screen items-center justify-center bg-gray-50">
         <div className="text-center">
-          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600 mx-auto mb-4"></div>
-          <p className="text-gray-600">Loading reporting data...</p>
+          <div className="mx-auto mb-4 h-12 w-12 animate-spin rounded-full border-2 border-blue-600 border-t-transparent" />
+          <p className="text-gray-600">Loading reporting data…</p>
         </div>
       </div>
     );
   }
 
   return (
-    <div className="max-w-7xl mx-auto px-6 py-8">
+    <div className="min-h-screen bg-gray-50 text-gray-900">
+      <div className="mx-auto max-w-7xl px-6 py-8">
       {/* Header */}
-      <div className="mb-6 flex items-center justify-between">
+      <div className="mb-8 flex flex-col gap-6 lg:flex-row lg:items-start lg:justify-between">
         <div>
-          <h1 className="text-3xl font-bold text-gray-900">Reporting</h1>
-          <p className="text-gray-600 mt-1">European GDPR Dashboard</p>
-          <nav className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-sm text-gray-600">
-            <Link href="/reporting/view" className="text-blue-600 hover:underline">
-              Online view
-            </Link>
-            <span className="text-gray-300" aria-hidden>
-              |
+          <p className="text-xs font-semibold uppercase tracking-wide text-gray-500">GDPR performance</p>
+          <h1 className="mt-1 text-3xl font-bold tracking-tight text-gray-900">Reporting</h1>
+          <p className="mt-2 inline-flex items-center gap-2 rounded-full border border-gray-200 bg-white px-3 py-1 text-xs text-gray-600 shadow-sm">
+            <span className="text-gray-500">Range</span>
+            <span className="font-medium text-gray-900">
+              Jan 1, {selectedYear} – Dec 31, {selectedYear}
             </span>
-            <Link href="/reporting/upload" className="text-blue-600 hover:underline">
-              Upload / import
+          </p>
+          <nav className="mt-3 flex flex-wrap gap-x-4 gap-y-1 text-sm text-gray-600">
+            <Link href="/reporting" className="text-blue-600 hover:underline">
+              Dashboard (shareable)
             </Link>
             <span className="text-gray-300" aria-hidden>
               |
             </span>
             <Link href="/reporting/overrides" className="text-blue-600 hover:underline">
-              Overrides (GDPR & MBR)
+              Overrides (GDPR &amp; MBR)
             </Link>
             <span className="text-gray-300" aria-hidden>
               |
@@ -245,183 +422,374 @@ export default function ReportingPage() {
             <Link href="/reporting/submit" className="text-blue-600 hover:underline">
               Submit weekly data
             </Link>
+            {isAdmin && (
+              <>
+                <span className="text-gray-300" aria-hidden>
+                  |
+                </span>
+                <Link href="/admin/reporting/edit" className="text-blue-600 hover:underline">
+                  Admin: edit data
+                </Link>
+              </>
+            )}
           </nav>
         </div>
-        <div className="flex gap-3">
+        <div className="flex flex-wrap gap-2">
           <Link
             href="/reporting/submit"
-            className="bg-emerald-600 text-white px-6 py-3 rounded-lg font-medium hover:bg-emerald-700 transition"
+            className="rounded-lg bg-emerald-600 px-5 py-2.5 text-sm font-semibold text-white shadow-sm transition hover:bg-emerald-700"
           >
-            ✏️ Submit weekly data
-          </Link>
-          <Link
-            href="/reporting/upload"
-            className="bg-blue-600 text-white px-6 py-3 rounded-lg font-medium hover:bg-blue-700 transition"
-          >
-            📊 Upload CSV
+            Submit weekly data
           </Link>
           <Link
             href="/admin/training-cases/upload"
-            className="bg-purple-600 text-white px-6 py-3 rounded-lg font-medium hover:bg-purple-700 transition"
+            className="rounded-lg border border-gray-300 bg-white px-5 py-2.5 text-sm font-semibold text-gray-800 shadow-sm transition hover:bg-gray-50"
           >
-            📚 Upload Training Cases
+            Upload training cases
           </Link>
           <Link
             href="/admin/training-cases/report"
-            className="bg-green-600 text-white px-6 py-3 rounded-lg font-medium hover:bg-green-700 transition"
+            className="rounded-lg border border-gray-300 bg-white px-5 py-2.5 text-sm font-semibold text-gray-800 shadow-sm transition hover:bg-gray-50"
           >
-            📊 View Training Report
+            Training report
           </Link>
         </div>
       </div>
 
-      {/* View Mode Toggle & Month Selector */}
-      <div className="bg-white border border-gray-200 rounded-lg p-4 mb-6">
-        <div className="flex items-center justify-between gap-4">
-          {/* View Mode */}
-          <div className="flex gap-2">
-            <button
-              onClick={() => setViewMode('week')}
-              className={`px-4 py-2 rounded-lg font-medium transition ${
-                viewMode === 'week' ? 'bg-blue-600 text-white' : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
-              }`}
-            >
-              Week View
-            </button>
-            <button
-              onClick={() => setViewMode('month')}
-              className={`px-4 py-2 rounded-lg font-medium transition ${
-                viewMode === 'month' ? 'bg-blue-600 text-white' : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
-              }`}
-            >
-              Month View
-            </button>
-          </div>
-
-          {/* Month Selector (only show in month view) */}
-          {viewMode === 'month' && (
-            <div className="flex items-center gap-3">
-              <button
-                onClick={() => setSelectedMonth(getPreviousMonth(selectedMonth))}
-                className="px-3 py-2 bg-gray-100 hover:bg-gray-200 rounded-lg transition"
-              >
-                ◀
-              </button>
-              <span className="font-semibold text-gray-900 min-w-[150px] text-center">
-                {formatMonthDisplay(selectedMonth)}
-              </span>
-              <button
-                onClick={() => setSelectedMonth(getNextMonth(selectedMonth))}
-                className="px-3 py-2 bg-gray-100 hover:bg-gray-200 rounded-lg transition"
-              >
-                ▶
-              </button>
-            </div>
-          )}
-
-          {/* Market Filter */}
+      {/* Year + report month + chart filters */}
+      <div className="mb-6 space-y-4 rounded-xl border border-gray-200 bg-white p-5 shadow-sm">
+        <div className="flex flex-wrap items-end gap-4">
           <div>
+            <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-gray-500">
+              Dashboard year
+            </label>
             <select
-              value={selectedMarket}
-              onChange={(e) => setSelectedMarket(e.target.value)}
-              className="px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+              value={selectedYear}
+              onChange={e => setSelectedYear(Number(e.target.value))}
+              className="rounded-lg border border-gray-300 bg-white px-4 py-2 text-sm font-medium text-gray-900"
             >
-              <option value="all">All Markets</option>
-              <option value="DACH">DACH</option>
-              <option value="France">France</option>
-              <option value="Nordics">Nordics</option>
-              <option value="NL">NL</option>
-              <option value="Be / Lux">Be / Lux</option>
+              {[0, 1, 2, 3, 4].map(off => {
+                const y = new Date().getFullYear() - off;
+                return (
+                  <option key={y} value={y}>
+                    {y}
+                  </option>
+                );
+              })}
             </select>
+          </div>
+          <div>
+            <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-gray-500">
+              Report &amp; export month
+            </label>
+            <select
+              value={reportMonth}
+              onChange={e => setReportMonth(Number(e.target.value))}
+              className="min-w-[180px] rounded-lg border border-gray-300 bg-white px-4 py-2 text-sm font-medium text-gray-900"
+            >
+              {Array.from({ length: 12 }, (_, i) => i + 1).map(m => (
+                <option key={m} value={m}>
+                  {new Date(selectedYear, m - 1, 1).toLocaleDateString('en-US', { month: 'long' })} ({selectedYear})
+                </option>
+              ))}
+            </select>
+          </div>
+        </div>
+        <div>
+          <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-gray-500">Chart: markets</p>
+          <div className="flex flex-wrap gap-2">
+            {REPORT_MARKETS.map(mk => (
+              <button
+                key={mk}
+                type="button"
+                onClick={() => setChartMarketsOn(prev => ({ ...prev, [mk]: !prev[mk] }))}
+                className={`rounded-full border px-3 py-1.5 text-xs font-semibold transition ${
+                  chartMarketsOn[mk]
+                    ? 'border-blue-600 bg-blue-600 text-white'
+                    : 'border-gray-200 bg-gray-50 text-gray-600 hover:border-gray-300'
+                }`}
+              >
+                {mk}
+              </button>
+            ))}
+          </div>
+          <p className="mt-2 text-xs text-gray-500">
+            Lines = deletion + portability per month (dashboard year). Deep dive and GDPR copy use the selected report
+            month only.
+          </p>
+        </div>
+      </div>
+
+      {/* KPI strip */}
+      <div className="mb-6 grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+        <div className="rounded-xl border border-gray-200 bg-white p-5 shadow-sm">
+          <p className="text-xs font-semibold uppercase tracking-wide text-gray-500">Total requests (YTD)</p>
+          <p className="mt-1 text-3xl font-bold text-gray-900">{ytdTotalRequests.toLocaleString()}</p>
+          {formatYoy(ytdTotalRequests, prevYtdTotal) && (
+            <p className="mt-1 text-xs text-gray-500">
+              vs prior calendar year:{' '}
+              <span className="font-semibold text-gray-800">{formatYoy(ytdTotalRequests, prevYtdTotal)}</span>
+            </p>
+          )}
+          <div className="mt-3 h-12 w-full">
+            <ResponsiveContainer width="100%" height="100%">
+              <AreaChart data={sparklineData}>
+                <defs>
+                  <linearGradient id="gSparkTotal" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="0%" stopColor="#a78bfa" stopOpacity={0.45} />
+                    <stop offset="100%" stopColor="#a78bfa" stopOpacity={0} />
+                  </linearGradient>
+                </defs>
+                <XAxis dataKey="i" hide />
+                <YAxis hide domain={['dataMin', 'dataMax']} />
+                <Area type="monotone" dataKey="v" stroke="#c4b5fd" strokeWidth={2} fill="url(#gSparkTotal)" isAnimationActive={false} />
+              </AreaChart>
+            </ResponsiveContainer>
+          </div>
+        </div>
+        <div className="rounded-xl border border-gray-200 bg-white p-5 shadow-sm">
+          <p className="text-xs font-semibold uppercase tracking-wide text-gray-500">Deletions (YTD)</p>
+          <p className="mt-1 text-3xl font-bold text-gray-900">{ytdDeletions.toLocaleString()}</p>
+          {formatYoy(ytdDeletions, prevYtdDel) && (
+            <p className="mt-1 text-xs text-gray-500">
+              vs prior year: <span className="font-semibold text-gray-800">{formatYoy(ytdDeletions, prevYtdDel)}</span>
+            </p>
+          )}
+          <div className="mt-3 h-12 w-full">
+            <ResponsiveContainer width="100%" height="100%">
+              <AreaChart data={delSparklineData}>
+                <defs>
+                  <linearGradient id="gSparkDel" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="0%" stopColor="#2dd4bf" stopOpacity={0.4} />
+                    <stop offset="100%" stopColor="#2dd4bf" stopOpacity={0} />
+                  </linearGradient>
+                </defs>
+                <XAxis dataKey="i" hide />
+                <YAxis hide domain={['dataMin', 'dataMax']} />
+                <Area type="monotone" dataKey="v" stroke="#5eead4" strokeWidth={2} fill="url(#gSparkDel)" isAnimationActive={false} />
+              </AreaChart>
+            </ResponsiveContainer>
+          </div>
+        </div>
+        <div className="rounded-xl border border-gray-200 bg-white p-5 shadow-sm">
+          <p className="text-xs font-semibold uppercase tracking-wide text-gray-500">Portability (YTD)</p>
+          <p className="mt-1 text-3xl font-bold text-gray-900">{ytdPortability.toLocaleString()}</p>
+          {formatYoy(ytdPortability, prevYtdPort) && (
+            <p className="mt-1 text-xs text-gray-500">
+              vs prior year:{' '}
+              <span className="font-semibold text-gray-800">{formatYoy(ytdPortability, prevYtdPort)}</span>
+            </p>
+          )}
+          <div className="mt-3 h-12 w-full">
+            <ResponsiveContainer width="100%" height="100%">
+              <AreaChart data={portSparklineData}>
+                <defs>
+                  <linearGradient id="gSparkPort" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="0%" stopColor="#f472b6" stopOpacity={0.35} />
+                    <stop offset="100%" stopColor="#f472b6" stopOpacity={0} />
+                  </linearGradient>
+                </defs>
+                <XAxis dataKey="i" hide />
+                <YAxis hide domain={['dataMin', 'dataMax']} />
+                <Area type="monotone" dataKey="v" stroke="#f9a8d4" strokeWidth={2} fill="url(#gSparkPort)" isAnimationActive={false} />
+              </AreaChart>
+            </ResponsiveContainer>
+          </div>
+        </div>
+        <div className="rounded-xl border border-gray-200 bg-white p-5 shadow-sm">
+          <p className="text-xs font-semibold uppercase tracking-wide text-gray-500">Legal &amp; incidents (YTD)</p>
+          <p className="mt-1 text-3xl font-bold text-gray-900">{ytdLegal.toLocaleString()}</p>
+          {formatYoy(ytdLegal, prevYtdLegal) && (
+            <p className="mt-1 text-xs text-gray-500">
+              vs prior year: <span className="font-semibold text-gray-800">{formatYoy(ytdLegal, prevYtdLegal)}</span>
+            </p>
+          )}
+          <div className="mt-3 h-12 w-full">
+            <ResponsiveContainer width="100%" height="100%">
+              <AreaChart data={legalSparklineData}>
+                <defs>
+                  <linearGradient id="gSparkLeg" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="0%" stopColor="#fb923c" stopOpacity={0.35} />
+                    <stop offset="100%" stopColor="#fb923c" stopOpacity={0} />
+                  </linearGradient>
+                </defs>
+                <XAxis dataKey="i" hide />
+                <YAxis hide domain={['dataMin', 'dataMax']} />
+                <Area type="monotone" dataKey="v" stroke="#fdba74" strokeWidth={2} fill="url(#gSparkLeg)" isAnimationActive={false} />
+              </AreaChart>
+            </ResponsiveContainer>
+          </div>
+        </div>
+      </div>
+
+      {/* Year trend + market comparison */}
+      <div className="mb-6 grid gap-6 lg:grid-cols-3">
+        <div className="rounded-xl border border-gray-200 bg-white p-6 shadow-sm lg:col-span-2">
+          <div className="mb-4 flex flex-wrap items-start justify-between gap-2">
+            <div>
+              <h2 className="text-lg font-bold text-gray-900">Requests by month</h2>
+              <p className="text-xs text-gray-500">Deletion + portability, all toggled markets</p>
+            </div>
+          </div>
+          {chartRows.some(r => REPORT_MARKETS.some(mk => chartMarketsOn[mk] && (r[mk] as number) > 0)) ? (
+            <div className="h-[320px] w-full">
+              <ResponsiveContainer width="100%" height="100%">
+                <LineChart data={chartRows} margin={{ top: 8, right: 16, left: 0, bottom: 4 }}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
+                  <XAxis dataKey="label" tick={{ fill: '#6b7280', fontSize: 11 }} axisLine={{ stroke: '#d1d5db' }} />
+                  <YAxis
+                    allowDecimals={false}
+                    tick={{ fill: '#6b7280', fontSize: 11 }}
+                    width={36}
+                    axisLine={{ stroke: '#d1d5db' }}
+                  />
+                  <Tooltip
+                    contentStyle={{
+                      backgroundColor: '#fff',
+                      border: '1px solid #e5e7eb',
+                      borderRadius: '8px',
+                      fontSize: '12px',
+                    }}
+                    labelStyle={{ color: '#111827' }}
+                    formatter={(v: number) => [`${v} requests`, '']}
+                  />
+                  <Legend wrapperStyle={{ fontSize: 12, color: '#4b5563' }} />
+                  {REPORT_MARKETS.filter(mk => chartMarketsOn[mk]).map(mk => (
+                    <Line
+                      key={mk}
+                      type="monotone"
+                      dataKey={mk}
+                      name={mk}
+                      stroke={LINE_COLORS[mk] ?? '#94a3b8'}
+                      strokeWidth={2}
+                      dot={false}
+                      activeDot={{ r: 4 }}
+                    />
+                  ))}
+                </LineChart>
+              </ResponsiveContainer>
+            </div>
+          ) : (
+            <p className="py-12 text-center text-gray-500">No request data for this year yet.</p>
+          )}
+        </div>
+        <div className="rounded-xl border border-gray-200 bg-white p-5 shadow-sm">
+          <h2 className="text-sm font-bold text-gray-900">Markets (YTD volume)</h2>
+          <p className="mb-3 text-xs text-gray-500">Deletion + portability vs strongest market</p>
+          <div className="space-y-3">
+            {marketPerformanceRows.map(row => (
+              <div key={row.mk}>
+                <div className="flex items-center justify-between text-xs">
+                  <span className="font-medium text-gray-800">{row.mk}</span>
+                  <span className="font-mono text-gray-600">{row.total.toLocaleString()}</span>
+                </div>
+                <div className="mt-1 h-2 overflow-hidden rounded-full bg-gray-100">
+                  <div
+                    className="h-full rounded-full bg-gradient-to-r from-blue-600 to-teal-500"
+                    style={{ width: `${row.barPct}%` }}
+                  />
+                </div>
+                <div className="mt-0.5 flex justify-between text-[10px] text-gray-500">
+                  <span>
+                    del {row.del} · port {row.port}
+                  </span>
+                  {formatYoy(row.total, row.prev) && (
+                    <span className="text-gray-600">YoY {formatYoy(row.total, row.prev)}</span>
+                  )}
+                </div>
+              </div>
+            ))}
           </div>
         </div>
       </div>
 
       {/* Copy Buttons */}
-      {viewMode === 'month' && (
-        <div className="bg-white border border-gray-200 rounded-lg p-4 mb-6 flex items-center justify-between">
+      <div className="mb-6 flex flex-wrap items-center justify-between gap-4 rounded-xl border border-gray-200 bg-white p-5 shadow-sm">
           <div>
-            <h2 className="text-lg font-bold text-gray-900">📊 {formatMonthDisplay(selectedMonth)} Report</h2>
+            <h2 className="text-lg font-bold text-gray-900">{formatMonthDisplay(exportMonthKey)} report</h2>
             <p className="text-sm text-gray-600">Export or copy your GDPR report for email</p>
           </div>
-          <div className="flex gap-2">
+          <div className="flex flex-wrap gap-2">
             <button
               onClick={copyGdprReport}
-              className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition text-sm font-medium"
+              className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-blue-700"
             >
-              Copy GDPR Report
+              Copy GDPR report
             </button>
             <button
               onClick={copyMBRReport}
-              className="px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition text-sm font-medium flex items-center gap-2"
+              className="flex items-center gap-2 rounded-lg bg-emerald-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-emerald-700"
             >
-              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
               </svg>
-              Copy MBR Report
+              Copy MBR report
             </button>
             <button
               onClick={exportCSV}
-              className="px-4 py-2 bg-white border border-gray-300 rounded-lg hover:bg-gray-50 transition text-sm font-medium"
+              className="rounded-lg border border-gray-300 bg-white px-4 py-2 text-sm font-semibold text-gray-800 transition hover:bg-gray-50"
             >
-              📥 Export CSV
+              Export CSV
             </button>
           </div>
         </div>
-      )}
 
       {/* 1. Summary & Outlook (Market Deep Dive) */}
-      {viewMode === 'month' && marketDeepDive && marketDeepDive.summaryAndOutlook && (
-        <div className="bg-white rounded-lg border border-gray-200 p-6 mb-6">
-          <div className="flex items-center justify-between mb-4">
-            <h2 className="text-lg font-bold text-gray-900 flex items-center gap-2">
-              <svg className="w-5 h-5 text-gray-700" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+      {marketDeepDive && marketDeepDive.summaryAndOutlook && (
+        <div className="mb-6 rounded-xl border border-gray-200 bg-white p-6 shadow-sm">
+          <div className="mb-4 flex items-center justify-between">
+            <h2 className="flex items-center gap-2 text-lg font-bold text-gray-900">
+              <svg className="h-5 w-5 text-gray-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
               </svg>
               Summary & Outlook
             </h2>
             <Link
               href="/reporting/overrides"
-              className="text-blue-600 hover:text-blue-700 text-sm font-medium"
+              className="text-sm font-medium text-blue-600 hover:text-blue-800"
             >
               Edit →
             </Link>
           </div>
-          <p className="text-sm text-gray-700 leading-relaxed whitespace-pre-wrap">{marketDeepDive.summaryAndOutlook}</p>
+          <p className="whitespace-pre-wrap text-sm leading-relaxed text-gray-700">{marketDeepDive.summaryAndOutlook}</p>
         </div>
       )}
 
       {/* 2. GDPR Related Incidents */}
-      {viewMode === 'month' && marketDeepDive && marketDeepDive.significantIncidents && marketDeepDive.significantIncidents.length > 0 && (
-        <div className="bg-white rounded-lg border border-gray-200 p-6 mb-6">
-          <div className="flex items-center justify-between mb-4">
-            <h2 className="text-lg font-bold text-gray-900">⚠️ GDPR Related Incidents & Compliance Risks</h2>
+      {marketDeepDive && marketDeepDive.significantIncidents && marketDeepDive.significantIncidents.length > 0 && (
+        <div className="mb-6 rounded-xl border border-gray-200 bg-white p-6 shadow-sm">
+          <div className="mb-4 flex items-center justify-between">
+            <h2 className="text-lg font-bold text-gray-900">GDPR related incidents & compliance risks</h2>
             <Link
               href="/reporting/overrides"
-              className="text-blue-600 hover:text-blue-700 text-sm font-medium"
+              className="text-sm font-medium text-blue-600 hover:text-blue-800"
             >
               Edit →
             </Link>
           </div>
           <div className="space-y-3">
             {marketDeepDive.significantIncidents.map((incident, idx) => (
-              <div key={idx} className="border-l-4 border-red-400 bg-red-50 pl-4 py-3 rounded">
-                <h4 className="font-semibold text-gray-900 text-sm mb-1">Incident {String.fromCharCode(65 + idx)}: {incident.title}</h4>
-                <p className="text-sm text-gray-700 whitespace-pre-wrap">{incident.description}</p>
+              <div
+                key={idx}
+                className="rounded-r-lg border border-red-200 border-l-4 border-l-red-500 bg-red-50 py-3 pl-4"
+              >
+                <h4 className="mb-1 text-sm font-semibold text-red-900">
+                  Incident {String.fromCharCode(65 + idx)}: {incident.title}
+                </h4>
+                <p className="whitespace-pre-wrap text-sm text-gray-800">{incident.description}</p>
               </div>
             ))}
           </div>
         </div>
       )}
 
-      {/* 3. Market Snapshot */}
-      {viewMode === 'month' && marketDeepDive && (
-        <div className="bg-white rounded-lg border border-gray-200 p-6 mb-6">
-          <div className="flex items-center justify-between mb-4">
-            <h2 className="text-lg font-bold text-gray-900">🌍 Market Snapshot</h2>
+      {marketDeepDive && (
+        <div className="mb-6 rounded-xl border border-gray-200 bg-white p-6 shadow-sm">
+          <div className="mb-4 flex items-center justify-between">
+            <h2 className="text-lg font-bold text-gray-900">Market snapshot — {formatMonthDisplay(exportMonthKey)} (detail)</h2>
             <Link
               href="/reporting/overrides"
-              className="text-blue-600 hover:text-blue-700 text-sm font-medium"
+              className="text-sm font-medium text-blue-600 hover:text-blue-800"
             >
               Edit →
             </Link>
@@ -429,21 +797,21 @@ export default function ReportingPage() {
           <div className="overflow-x-auto">
             <table className="w-full border-collapse">
               <thead>
-                <tr className="border-b-2 border-gray-300">
-                  <th className="text-left py-3 px-3 text-sm font-semibold text-gray-700">Market</th>
-                  <th className="text-center py-3 px-3 text-sm font-semibold text-gray-700">Deletions</th>
-                  <th className="text-center py-3 px-3 text-sm font-semibold text-gray-700">Access requests</th>
-                  <th className="text-center py-3 px-3 text-sm font-semibold text-gray-700">Legal escalations</th>
-                  <th className="text-center py-3 px-3 text-sm font-semibold text-gray-700">Status</th>
+                <tr className="border-b-2 border-gray-200">
+                  <th className="px-3 py-3 text-left text-sm font-semibold text-gray-700">Market</th>
+                  <th className="px-3 py-3 text-center text-sm font-semibold text-gray-700">Deletions</th>
+                  <th className="px-3 py-3 text-center text-sm font-semibold text-gray-700">Access requests</th>
+                  <th className="px-3 py-3 text-center text-sm font-semibold text-gray-700">Legal escalations</th>
+                  <th className="px-3 py-3 text-center text-sm font-semibold text-gray-700">Status</th>
                 </tr>
               </thead>
               <tbody>
                 {['DACH', 'Fr', 'BNL', 'Nordics'].map(market => {
                   const data = marketDeepDive.markets[market as keyof typeof marketDeepDive.markets];
                   const prevData = previousMonthDeepDive?.markets?.[market as keyof typeof marketDeepDive.markets];
-                  const marketStatus = getMarketStatusData(filteredReports).find(m => {
+                  const marketStatus = getMarketStatusData(reportsExportMonth).find(m => {
                     if (market === 'Fr') return m.market === 'France';
-                    if (market === 'BNL') return m.market === 'NL' || m.market === 'Be / Lux';
+                    if (market === 'BNL') return m.market === 'BNL';
                     return m.market === market;
                   });
                   const statusEmoji = marketStatus?.status === 'green' ? '🟢' : marketStatus?.status === 'yellow' ? '🟡' : marketStatus?.status === 'red' ? '🔴' : '-';
@@ -468,22 +836,22 @@ export default function ReportingPage() {
                   };
 
                   return (
-                    <tr key={market} className="border-b border-gray-200 hover:bg-gray-50">
-                      <td className="py-3 px-3 font-semibold text-gray-900">{market === 'Fr' ? 'France' : market}</td>
-                      <td className="py-3 px-3 text-center text-sm">
-                        <div className="font-mono font-medium">{del}</div>
+                    <tr key={market} className="border-b border-gray-100 hover:bg-gray-50">
+                      <td className="px-3 py-3 font-semibold text-gray-900">{market === 'Fr' ? 'France' : market}</td>
+                      <td className="px-3 py-3 text-center text-sm">
+                        <div className="font-mono font-medium text-gray-900">{del}</div>
                         {previousMonthDeepDive && (
                           <div className={`text-xs font-semibold ${momClass(del, delP)}`}>{momText(del, delP)}</div>
                         )}
                       </td>
-                      <td className="py-3 px-3 text-center text-sm">
-                        <div className="font-mono font-medium">{acc}</div>
+                      <td className="px-3 py-3 text-center text-sm">
+                        <div className="font-mono font-medium text-gray-900">{acc}</div>
                         {previousMonthDeepDive && (
                           <div className={`text-xs font-semibold ${momClass(acc, accP)}`}>{momText(acc, accP)}</div>
                         )}
                       </td>
-                      <td className="py-3 px-3 text-center text-sm">
-                        <div className="font-mono font-medium">{esc}</div>
+                      <td className="px-3 py-3 text-center text-sm">
+                        <div className="font-mono font-medium text-gray-900">{esc}</div>
                         {previousMonthDeepDive && (
                           <div className={`text-xs font-semibold ${momClass(esc, escP)}`}>{momText(esc, escP)}</div>
                         )}
@@ -498,79 +866,33 @@ export default function ReportingPage() {
         </div>
       )}
 
-      {/* 4. Highlights */}
-      {viewMode === 'month' && (filteredActivityLog.filter(a => a.category === 'Initiative').length > 0) && (
-        <div className="bg-white rounded-lg border border-gray-200 p-6 mb-6">
-          <h2 className="text-lg font-bold text-gray-900 mb-4">✅ Highlights</h2>
-          <HighlightsSectionComponent activityLog={filteredActivityLog} />
+      {/* 4. Highlights (report month) */}
+      {activityExportMonth.filter(a => isActivityHighlightKind(resolveActivityKind(a))).length > 0 && (
+        <div className="mb-6 rounded-xl border border-gray-200 bg-white p-6 shadow-sm">
+          <h2 className="mb-4 text-lg font-bold text-gray-900">Highlights — {formatMonthDisplay(exportMonthKey)}</h2>
+          <HighlightsSectionComponent activityLog={activityExportMonth} />
         </div>
       )}
 
-      {/* 5. Lowlights & Attention Areas */}
-      {viewMode === 'month' && (
-        <div className="bg-white rounded-lg border border-gray-200 p-6 mb-6">
-          <h2 className="text-lg font-bold text-gray-900 mb-4">⚠️ Lowlights & Attention Areas</h2>
-          <LowlightsSectionComponent reports={filteredReports} activityLog={filteredActivityLog} />
-        </div>
-      )}
-
-      {/* Trends Chart - By Market */}
-      <div className="bg-white border border-gray-200 rounded-lg p-6 mb-6">
-        <div className="mb-4">
-          <h2 className="text-lg font-bold text-gray-900">📈 Total Requests Trend by Market</h2>
-          <p className="text-sm text-gray-600">Last 8 weeks (Deletion + Portability combined)</p>
-        </div>
-        {trendsData.length > 0 ? (
-          <div className="grid grid-cols-1 md:grid-cols-3 lg:grid-cols-5 gap-4">
-            {['DACH', 'France', 'Nordics', 'NL', 'Be / Lux'].map(market => {
-              const marketData = prepareMarketTrendData(reports, market);
-              return (
-                <div key={market} className="border border-gray-200 rounded-lg p-3">
-                  <h3 className="text-sm font-semibold text-gray-700 mb-2 text-center">{market}</h3>
-                  {marketData.length > 0 ? (
-                    <ResponsiveContainer width="100%" height={120}>
-                      <LineChart data={marketData}>
-                        <Line type="monotone" dataKey="requests" stroke="#3B82F6" strokeWidth={2} dot={false} />
-                        <XAxis dataKey="week" hide />
-                        <YAxis hide />
-                        <Tooltip 
-                          contentStyle={{ fontSize: '12px' }}
-                          formatter={(value) => [`${value} requests`]}
-                        />
-                      </LineChart>
-                    </ResponsiveContainer>
-                  ) : (
-                    <p className="text-xs text-gray-400 text-center py-8">No data</p>
-                  )}
-                  {marketData.length > 0 && (
-                    <div className="mt-2 text-center">
-                      <span className="text-xs text-gray-600">
-                        Latest: {marketData[marketData.length - 1]?.requests || 0}
-                      </span>
-                    </div>
-                  )}
-                </div>
-              );
-            })}
-          </div>
-        ) : (
-          <p className="text-gray-500 text-center py-12">No data available</p>
-        )}
+      {/* 5. Lowlights (report month) */}
+      <div className="mb-6 rounded-xl border border-gray-200 bg-white p-6 shadow-sm">
+        <h2 className="mb-4 text-lg font-bold text-gray-900">Lowlights &amp; attention — {formatMonthDisplay(exportMonthKey)}</h2>
+        <LowlightsSectionComponent reports={reportsExportMonth} activityLog={activityExportMonth} />
       </div>
 
       {/* 6. Agent Training Snapshot */}
       {trainingReport && trainingReport.totalCases > 0 && (
-        <div className="bg-white rounded-lg border border-gray-200 p-6 mb-6">
-          <div className="flex items-center justify-between mb-4">
+        <div className="mb-6 rounded-xl border border-gray-200 bg-white p-6 shadow-sm">
+          <div className="mb-4 flex items-center justify-between">
             <div>
-              <h2 className="text-lg font-bold text-gray-900">📚 Agent Training Snapshot</h2>
+              <h2 className="text-lg font-bold text-gray-900">Agent training snapshot</h2>
               <p className="text-sm text-gray-600">
                 Common 1st Line Agent errors requiring training intervention
               </p>
             </div>
             <div className="text-right">
               <div className="text-2xl font-bold text-purple-600">{trainingReport.totalCases}</div>
-              <div className="text-xs text-gray-500">Training Cases</div>
+              <div className="text-xs text-gray-500">Training cases</div>
             </div>
           </div>
 
@@ -583,11 +905,11 @@ export default function ReportingPage() {
                 return acc;
               }, {} as Record<string, typeof trainingReport.topErrors>)
             ).map(([market, errors]) => (
-              <div key={market} className="border border-gray-300 rounded-lg overflow-hidden">
-                <div className="bg-purple-50 px-4 py-2 border-b border-purple-200">
+              <div key={market} className="overflow-hidden rounded-lg border border-gray-200">
+                <div className="border-b border-purple-200 bg-purple-50 px-4 py-2">
                   <div className="flex items-center justify-between">
-                    <span className="font-bold text-purple-900 text-sm">{market}</span>
-                    <span className="px-2 py-1 bg-purple-200 text-purple-800 rounded-full text-xs font-bold">
+                    <span className="text-sm font-bold text-purple-900">{displayMarketLabel(market)}</span>
+                    <span className="rounded-full bg-purple-200 px-2 py-1 text-xs font-bold text-purple-900">
                       {errors.reduce((sum, e) => sum + e.count, 0)} cases
                     </span>
                   </div>
@@ -596,15 +918,20 @@ export default function ReportingPage() {
                   <table className="w-full text-sm">
                     <thead>
                       <tr className="border-b border-gray-200 text-xs text-gray-600">
-                        <th className="text-left py-1">Error Type</th>
-                        <th className="text-right py-1 w-16">Count</th>
-                        <th className="text-center py-1 w-12">Trend</th>
+                        <th className="py-1 text-left">Error type</th>
+                        <th className="w-16 py-1 text-right">Count</th>
+                        <th className="w-12 py-1 text-center">Trend</th>
                       </tr>
                     </thead>
                     <tbody>
                       {errors.slice(0, 5).map((error, idx) => {
                         const trendIcon = error.trend === 'up' ? '📈' : error.trend === 'down' ? '📉' : '➡️';
-                        const trendColor = error.trend === 'up' ? 'text-red-600' : error.trend === 'down' ? 'text-green-600' : 'text-gray-600';
+                        const trendColor =
+                          error.trend === 'up'
+                            ? 'text-red-600'
+                            : error.trend === 'down'
+                              ? 'text-green-600'
+                              : 'text-gray-500';
                         const englishDescription = translateErrorDescription(error.errorDescription);
                         return (
                           <tr key={idx} className="border-b border-gray-100">
@@ -623,151 +950,84 @@ export default function ReportingPage() {
         </div>
       )}
 
-      {/* Activity Log */}
-      <div className="bg-white border border-gray-200 rounded-lg p-6">
-        <div className="flex items-center justify-between mb-4">
+      {/* Events (year, scrollable, filters) */}
+      <div className="rounded-xl border border-gray-200 bg-white p-6 shadow-sm">
+        <div className="mb-4 flex flex-wrap items-start justify-between gap-4">
           <div>
-            <h2 className="text-lg font-semibold">🗂️ Activity Log (Detailed View)</h2>
-            <p className="text-xs text-gray-500 mt-1">
-              Full activity log with escalations, initiatives, and wins grouped by category and market.
+            <h2 className="text-lg font-semibold text-gray-900">Events ({selectedYear})</h2>
+            <p className="mt-1 max-w-xl text-xs text-gray-500">
+              All activity notes in the dashboard year. Filter by market and type, sort by date. Use{' '}
+              <strong className="text-gray-800">Copy</strong> for the filtered list as plain text.
             </p>
           </div>
-          {filteredActivityLog.length > 0 && (
+          {eventsSorted.length > 0 && (
             <button
-              onClick={() => copyActivityLog(filteredActivityLog)}
-              className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition text-sm font-medium"
+              type="button"
+              onClick={() => copyActivityLog(eventsSorted)}
+              className="shrink-0 rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-blue-700"
             >
-              Copy Activity Log
+              Copy filtered list
             </button>
           )}
         </div>
-        
-        {filteredActivityLog.length > 0 ? (
-          <ActivityLogGrouped activities={filteredActivityLog} />
-        ) : (
-          <p className="text-center text-gray-500 py-8">No activity log entries found</p>
-        )}
-      </div>
-    </div>
-  );
-}
-
-// Activity Log Grouped Component
-function ActivityLogGrouped({ activities }: { activities: ActivityLogEntry[] }) {
-  const [openSections, setOpenSections] = useState<Record<string, boolean>>({
-    'Escalation': true,
-    'Initiative': true,
-  });
-
-  // Group by category
-  const grouped = activities.reduce((acc, entry) => {
-    if (!acc[entry.category]) {
-      acc[entry.category] = [];
-    }
-    acc[entry.category].push(entry);
-    return acc;
-  }, {} as Record<string, ActivityLogEntry[]>);
-
-  // Further group each category by market, then sort by date
-  const structuredData = Object.entries(grouped).map(([category, entries]) => {
-    const byMarket = entries.reduce((acc, entry) => {
-      if (!acc[entry.market]) {
-        acc[entry.market] = [];
-      }
-      acc[entry.market].push(entry);
-      return acc;
-    }, {} as Record<string, ActivityLogEntry[]>);
-
-    // Sort entries within each market by date (newest first)
-    Object.keys(byMarket).forEach(market => {
-      byMarket[market].sort((a, b) => b.weekOf.getTime() - a.weekOf.getTime());
-    });
-
-    return {
-      category,
-      totalCount: entries.length,
-      markets: Object.entries(byMarket).map(([market, marketEntries]) => ({
-        market,
-        count: marketEntries.length,
-        entries: marketEntries,
-      })),
-    };
-  });
-
-  // Sort categories: Escalations first, then others
-  structuredData.sort((a, b) => {
-    if (a.category === 'Escalation') return -1;
-    if (b.category === 'Escalation') return 1;
-    return 0;
-  });
-
-  const toggleSection = (category: string) => {
-    setOpenSections(prev => ({ ...prev, [category]: !prev[category] }));
-  };
-
-  return (
-    <div className="space-y-4">
-      {structuredData.map(({ category, totalCount, markets }) => {
-        const isOpen = openSections[category] !== false;
-        const isEscalation = category === 'Escalation';
-        const bgColor = isEscalation ? 'bg-red-50' : 'bg-blue-50';
-        const borderColor = isEscalation ? 'border-red-200' : 'border-blue-200';
-        const textColor = isEscalation ? 'text-red-900' : 'text-blue-900';
-        const icon = isEscalation ? '🚨' : category === 'Initiative' ? '📊' : '✅';
-
-        return (
-          <div key={category} className={`border-2 ${borderColor} rounded-lg overflow-hidden`}>
-            {/* Category Header */}
-            <button
-              onClick={() => toggleSection(category)}
-              className={`w-full ${bgColor} px-6 py-4 flex items-center justify-between hover:opacity-90 transition`}
-            >
-              <div className="flex items-center gap-3">
-                <span className="text-2xl">{icon}</span>
-                <h3 className={`text-lg font-bold ${textColor}`}>
-                  {category === 'Escalation' ? 'ESCALATIONS' : category === 'Initiative' ? 'INITIATIVES' : 'WINS'}
-                </h3>
-                <span className={`px-3 py-1 rounded-full text-sm font-bold ${
-                  isEscalation ? 'bg-red-200 text-red-800' : 'bg-blue-200 text-blue-800'
-                }`}>
-                  {totalCount}
-                </span>
-              </div>
-              <span className="text-gray-600 text-xl">{isOpen ? '▼' : '▶'}</span>
-            </button>
-
-            {/* Category Content */}
-            {isOpen && (
-              <div className="bg-white">
-                {markets.map(({ market, count, entries }) => (
-                  <div key={market} className="border-t border-gray-200">
-                    {/* Market Header */}
-                    <div className="bg-gray-50 px-6 py-3">
-                      <span className="font-bold text-gray-900">{market}</span>
-                    </div>
-
-                    {/* Entries */}
-                    <div className="divide-y divide-gray-100">
-                      {entries.map((entry) => (
-                        <div key={entry.id} className="px-6 py-4 hover:bg-gray-50 transition">
-                          <div className="flex items-start gap-3">
-                            <div className="flex-shrink-0 w-20 text-sm text-gray-600">
-                              {formatDate(entry.weekOf)}
-                            </div>
-                            <div className="flex-1">
-                              <p className="text-gray-800 leading-relaxed">{entry.details}</p>
-                            </div>
-                          </div>
-                        </div>
-                      ))}
-                    </div>
+        <div className="mb-4 flex flex-wrap gap-3">
+          <select
+            value={eventMarket}
+            onChange={e => setEventMarket(e.target.value)}
+            className="rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900"
+          >
+            <option value="all">All markets</option>
+            <option value="DACH">DACH</option>
+            <option value="France">France</option>
+            <option value="Nordics">Nordics</option>
+            <option value="BNL">BNL</option>
+          </select>
+          <select
+            value={eventKind}
+            onChange={e => setEventKind(e.target.value)}
+            className="rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900"
+          >
+            <option value="all">All types</option>
+            {(Object.keys(ACTIVITY_KIND_LABELS) as ActivityLogKind[]).map(k => (
+              <option key={k} value={k}>
+                {ACTIVITY_KIND_LABELS[k]}
+              </option>
+            ))}
+          </select>
+          <button
+            type="button"
+            onClick={() => setEventSortDesc(d => !d)}
+            className="rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-800 hover:bg-gray-50"
+          >
+            Date: {eventSortDesc ? 'newest first' : 'oldest first'}
+          </button>
+        </div>
+        <div className="max-h-[520px] divide-y divide-gray-100 overflow-y-auto rounded-lg border border-gray-200">
+          {eventsSorted.length === 0 ? (
+            <p className="py-10 text-center text-gray-500">No events for these filters.</p>
+          ) : (
+            eventsSorted.map(entry => {
+              const k = resolveActivityKind(entry);
+              return (
+                <div key={entry.id} className="p-4 hover:bg-gray-50">
+                  <div className="mb-1 flex flex-wrap items-center gap-2 text-xs text-gray-500">
+                    <span className="font-mono">{formatDate(entry.weekOf)}</span>
+                    <span className="font-semibold text-gray-800">{displayMarketLabel(entry.market)}</span>
+                    <span
+                      className={`inline-flex rounded-full px-2.5 py-0.5 text-xs font-semibold ${activityKindBadgeClass(k)}`}
+                    >
+                      {ACTIVITY_KIND_LABELS[k]}
+                    </span>
                   </div>
-                ))}
-              </div>
-            )}
-          </div>
-        );
-      })}
+                  {entry.title?.trim() && <p className="text-sm font-semibold text-gray-900">{entry.title}</p>}
+                  <p className="mt-1 whitespace-pre-wrap text-sm text-gray-700">{entry.details}</p>
+                </div>
+              );
+            })
+          )}
+        </div>
+      </div>
+      </div>
     </div>
   );
 }
@@ -775,94 +1035,120 @@ function ActivityLogGrouped({ activities }: { activities: ActivityLogEntry[] }) 
 // Helper Components
 
 function HighlightsSectionComponent({ activityLog }: { activityLog: ActivityLogEntry[] }) {
-  const wins = activityLog.filter(a => a.category === 'Initiative' && a.details.startsWith('✅'));
-  const initiatives = activityLog.filter(a => a.category === 'Initiative' && !a.details.startsWith('✅'));
-  
-  if (wins.length === 0 && initiatives.length === 0) {
-    return <p className="text-gray-500 text-sm italic">No major wins or initiatives reported this month.</p>;
+  const wins = activityLog.filter(a => resolveActivityKind(a) === 'win');
+  const initiatives = activityLog.filter(a => resolveActivityKind(a) === 'initiative');
+  const noteworthy = activityLog.filter(a => resolveActivityKind(a) === 'noteworthy');
+  const observations = activityLog.filter(a => resolveActivityKind(a) === 'observation');
+
+  const empty =
+    wins.length === 0 && initiatives.length === 0 && noteworthy.length === 0 && observations.length === 0;
+
+  if (empty) {
+    return <p className="text-sm italic text-gray-500">No highlights reported this month.</p>;
   }
-  
+
+  const block = (
+    title: string,
+    emoji: string,
+    border: string,
+    bg: string,
+    entries: ActivityLogEntry[]
+  ) => {
+    if (entries.length === 0) return null;
+    return (
+      <div className={`${bg} border-l-4 ${border} p-4 rounded`}>
+        <h3 className="font-semibold text-gray-900 mb-2 text-sm">
+          {emoji} {title}
+        </h3>
+        <ul className="space-y-2 text-sm">
+          {entries.map((e, idx) => (
+            <li key={idx} className="flex items-start gap-2">
+              <span className="text-gray-600">•</span>
+              <span>
+                <span className="font-semibold">{displayMarketLabel(e.market)}:</span>{' '}
+                {e.title?.trim() && <span className="font-medium text-gray-900">{e.title.trim()} — </span>}
+                <span className="text-gray-800">{(e.details || '').replace(/^\u2705\s*/, '')}</span>
+              </span>
+            </li>
+          ))}
+        </ul>
+      </div>
+    );
+  };
+
   return (
     <div className="space-y-4">
-      {wins.length > 0 && (
-        <div className="bg-green-50 border-l-4 border-green-400 p-4 rounded">
-          <h3 className="font-semibold text-gray-900 mb-2 text-sm">🎉 Wins & Achievements</h3>
-          <ul className="space-y-1 text-sm">
-            {wins.map((w, idx) => (
-              <li key={idx} className="flex items-start gap-2">
-                <span className="text-gray-600">•</span>
-                <span><span className="font-semibold">{w.market}:</span> {w.details.replace('✅ ', '')}</span>
-              </li>
-            ))}
-          </ul>
-        </div>
-      )}
-      
-      {initiatives.length > 0 && (
-        <div className="bg-blue-50 border-l-4 border-blue-400 p-4 rounded">
-          <h3 className="font-semibold text-gray-900 mb-2 text-sm">📊 Current Initiatives</h3>
-          <ul className="space-y-1 text-sm">
-            {initiatives.map((i, idx) => (
-              <li key={idx} className="flex items-start gap-2">
-                <span className="text-gray-600">•</span>
-                <span><span className="font-semibold">{i.market}:</span> {i.details}</span>
-              </li>
-            ))}
-          </ul>
-        </div>
-      )}
+      {block('Wins & achievements', '🎉', 'border-green-400', 'bg-green-50', wins)}
+      {block('Current initiatives', '📊', 'border-blue-400', 'bg-blue-50', initiatives)}
+      {block('Noteworthy', '⭐', 'border-amber-400', 'bg-amber-50', noteworthy)}
+      {block('Observations', '👁️', 'border-sky-400', 'bg-sky-50', observations)}
     </div>
   );
 }
 
 function LowlightsSectionComponent({ reports, activityLog }: { reports: WeeklyReport[]; activityLog: ActivityLogEntry[] }) {
   const atRiskMarkets = getMarketStatusData(reports).filter(m => m.status === 'yellow' || m.status === 'red');
-  const escalations = activityLog.filter(a => a.category === 'Escalation');
-  
-  if (atRiskMarkets.length === 0 && escalations.length === 0) {
-    return <p className="text-green-600 text-sm font-medium">🎉 All markets green - no major issues to report!</p>;
+  const attention = activityLog.filter(a => isActivityLowlightKind(resolveActivityKind(a)));
+
+  if (atRiskMarkets.length === 0 && attention.length === 0) {
+    return <p className="text-sm font-medium text-green-600">All markets green — no major issues to report.</p>;
   }
-  
+
   return (
     <div className="space-y-4">
       {atRiskMarkets.length > 0 && (
-        <div className="bg-yellow-50 border-l-4 border-yellow-400 p-4 rounded">
-          <h3 className="font-semibold text-gray-900 mb-2 text-sm">🚦 Markets Requiring Attention</h3>
-          <ul className="space-y-1 text-sm">
+        <div className="rounded-lg border border-amber-200 border-l-4 border-l-amber-500 bg-amber-50 p-4">
+          <h3 className="mb-2 text-sm font-semibold text-amber-900">Markets requiring attention</h3>
+          <ul className="space-y-1 text-sm text-gray-800">
             {atRiskMarkets.map((m, idx) => {
               const emoji = m.status === 'red' ? '🔴' : '🟡';
               return (
                 <li key={idx} className="flex items-start gap-2">
                   <span>{emoji}</span>
-                  <span><span className="font-semibold">{m.market}:</span> {m.reason}</span>
+                  <span>
+                    <span className="font-semibold">{displayMarketLabel(m.market)}:</span> {m.reason}
+                  </span>
                 </li>
               );
             })}
           </ul>
         </div>
       )}
-      
-      {escalations.length > 0 && (
-        <div className="bg-red-50 border-l-4 border-red-400 p-4 rounded">
-          <h3 className="font-semibold text-gray-900 mb-2 text-sm">🚨 Noteworthy Complaints & Issues</h3>
-          
-          {/* Group by market */}
+
+      {attention.length > 0 && (
+        <div className="rounded-lg border border-red-200 border-l-4 border-l-red-600 bg-red-50 p-4">
+          <h3 className="mb-2 text-sm font-semibold text-red-900">Complaints, incidents &amp; escalations</h3>
           {Object.entries(
-            escalations.reduce((acc, e) => {
-              if (!acc[e.market]) acc[e.market] = [];
-              acc[e.market].push(e);
+            attention.reduce((acc, e) => {
+              const dm = displayMarketLabel(e.market);
+              if (!acc[dm]) acc[dm] = [];
+              acc[dm].push(e);
               return acc;
             }, {} as Record<string, ActivityLogEntry[]>)
           ).map(([market, entries]) => (
             <div key={market} className="mb-3 last:mb-0">
-              <h4 className="font-semibold text-gray-800 text-xs mb-1">{market}:</h4>
-              <ul className="space-y-1 text-sm pl-2">
-                {entries.map((e, idx) => (
-                  <li key={idx} className="flex items-start gap-2">
-                    <span className="text-gray-600">•</span>
-                    <span>{e.details}</span>
-                  </li>
-                ))}
+              <h4 className="mb-1 text-xs font-semibold text-gray-700">{market}:</h4>
+              <ul className="space-y-2 pl-2 text-sm">
+                {entries.map((e, idx) => {
+                  const k = resolveActivityKind(e);
+                  return (
+                    <li key={idx} className="flex items-start gap-2">
+                      <span className="text-gray-500">•</span>
+                      <span>
+                        <span className="text-xs font-semibold uppercase tracking-wide text-red-800">
+                          {ACTIVITY_KIND_LABELS[k]}
+                        </span>
+                        {e.title?.trim() && (
+                          <>
+                            {' '}
+                            <span className="font-medium text-gray-900">{e.title.trim()}</span>
+                          </>
+                        )}
+                        <span className="mt-0.5 block text-gray-800">{e.details}</span>
+                      </span>
+                    </li>
+                  );
+                })}
               </ul>
             </div>
           ))}
@@ -987,41 +1273,6 @@ function HighlightsCard({ title, items, type }: { title: string; items: string[]
 
 // Helper Functions
 
-function prepareMarketTrendData(reports: WeeklyReport[], market: string) {
-  const marketReports = reports
-    .filter(r => r.market === market)
-    .sort((a, b) => a.weekOf.getTime() - b.weekOf.getTime())
-    .slice(-8); // Last 8 weeks
-  
-  return marketReports.map(r => ({
-    week: formatDateShort(r.weekOf),
-    requests: r.deletionRequests + r.portabilityRequests,
-  }));
-}
-
-function formatDateShort(date: Date): string {
-  const d = new Date(date);
-  return `${d.getMonth() + 1}/${d.getDate()}`;
-}
-
-function prepareTrendsData(reports: WeeklyReport[], currentMonth: string) {
-  // Get last 8 weeks of data
-  const sortedReports = [...reports].sort((a, b) => a.weekOf.getTime() - b.weekOf.getTime());
-  const weekMap = new Map<string, any>();
-  
-  sortedReports.forEach(report => {
-    const weekKey = formatDate(report.weekOf);
-    if (!weekMap.has(weekKey)) {
-      weekMap.set(weekKey, { week: weekKey, 'Total Requests': 0, 'Escalations': 0 });
-    }
-    const weekData = weekMap.get(weekKey)!;
-    weekData['Total Requests'] += report.deletionRequests + report.portabilityRequests;
-    weekData['Escalations'] += report.legalEscalations + report.regulatorInquiries + report.privacyIncidents;
-  });
-  
-  return Array.from(weekMap.values()).slice(-8);
-}
-
 function generateTextualSummary(
   current: any, 
   previous: any, 
@@ -1098,25 +1349,30 @@ function generateMonthlySummaryText(current: any, previous: any, highlights: any
   // Highlights (Wins + Initiatives)
   text += `✅ HIGHLIGHTS\n`;
   text += `${'─'.repeat(60)}\n`;
-  const wins = activityLog.filter(a => a.category === 'Initiative' && a.details.startsWith('✅'));
-  const initiatives = activityLog.filter(a => a.category === 'Initiative' && !a.details.startsWith('✅'));
-  
-  if (wins.length > 0) {
-    text += `\n🎉 Wins & Achievements:\n`;
-    wins.forEach(w => {
-      text += `  • [${w.market}] ${w.details.replace('✅ ', '')}\n`;
+  const wins = activityLog.filter(a => resolveActivityKind(a) === 'win');
+  const initiatives = activityLog.filter(a => resolveActivityKind(a) === 'initiative');
+  const noteworthy = activityLog.filter(a => resolveActivityKind(a) === 'noteworthy');
+  const observations = activityLog.filter(a => resolveActivityKind(a) === 'observation');
+
+  const pushBlock = (label: string, emoji: string, entries: ActivityLogEntry[]) => {
+    if (entries.length === 0) return;
+    text += `\n${emoji} ${label}:\n`;
+    entries.forEach(e => {
+      const k = resolveActivityKind(e);
+      const line = [ACTIVITY_KIND_LABELS[k], e.title?.trim(), (e.details || '').replace(/^\u2705\s*/, '')]
+        .filter(Boolean)
+        .join(' — ');
+      text += `  • [${e.market}] ${line}\n`;
     });
-  }
-  
-  if (initiatives.length > 0) {
-    text += `\n📊 Current Initiatives:\n`;
-    initiatives.forEach(i => {
-      text += `  • [${i.market}] ${i.details}\n`;
-    });
-  }
-  
-  if (wins.length === 0 && initiatives.length === 0) {
-    text += `No major wins or initiatives reported this month.\n`;
+  };
+
+  pushBlock('Wins & Achievements', '🎉', wins);
+  pushBlock('Current Initiatives', '📊', initiatives);
+  pushBlock('Noteworthy', '⭐', noteworthy);
+  pushBlock('Observations', '👁️', observations);
+
+  if (wins.length === 0 && initiatives.length === 0 && noteworthy.length === 0 && observations.length === 0) {
+    text += `No highlights reported this month.\n`;
   }
   text += `\n`;
   
@@ -1132,15 +1388,17 @@ function generateMonthlySummaryText(current: any, previous: any, highlights: any
     });
   }
   
-  const escalations = activityLog.filter(a => a.category === 'Escalation');
-  if (escalations.length > 0) {
-    text += `\n🚨 Noteworthy Complaints & Issues:\n`;
-    escalations.forEach(e => {
-      text += `  • [${e.market}] ${e.details}\n`;
+  const attention = activityLog.filter(a => isActivityLowlightKind(resolveActivityKind(a)));
+  if (attention.length > 0) {
+    text += `\n🚨 Complaints, incidents & escalations:\n`;
+    attention.forEach(e => {
+      const k = resolveActivityKind(e);
+      const line = [ACTIVITY_KIND_LABELS[k], e.title?.trim(), e.details].filter(Boolean).join(' — ');
+      text += `  • [${e.market}] ${line}\n`;
     });
   }
-  
-  if (atRiskMarkets.length === 0 && escalations.length === 0) {
+
+  if (atRiskMarkets.length === 0 && attention.length === 0) {
     text += `All markets green - no major issues to report! 🎉\n`;
   }
   
@@ -1307,57 +1565,6 @@ function generateCSV(reports: WeeklyReport[]): string {
   ]);
   
   return [headers, ...rows].map(row => row.join(',')).join('\n');
-}
-
-function generateActivityLogText(activities: ActivityLogEntry[]): string {
-  // Group by category
-  const grouped = activities.reduce((acc, entry) => {
-    if (!acc[entry.category]) {
-      acc[entry.category] = [];
-    }
-    acc[entry.category].push(entry);
-    return acc;
-  }, {} as Record<string, ActivityLogEntry[]>);
-
-  let text = '🗂️ ACTIVITY LOG\n';
-  text += '(Detailed descriptions from weekly reports)\n\n';
-
-  // Escalations first
-  if (grouped['Escalation']) {
-    text += `🚨 ESCALATIONS\n`;
-    text += formatCategoryText(grouped['Escalation']);
-    text += '\n';
-  }
-
-  // Initiatives
-  if (grouped['Initiative']) {
-    text += `📊 INITIATIVES\n`;
-    text += formatCategoryText(grouped['Initiative']);
-  }
-
-  return text;
-}
-
-function formatCategoryText(entries: ActivityLogEntry[]): string {
-  // Group by market
-  const byMarket = entries.reduce((acc, entry) => {
-    if (!acc[entry.market]) {
-      acc[entry.market] = [];
-    }
-    acc[entry.market].push(entry);
-    return acc;
-  }, {} as Record<string, ActivityLogEntry[]>);
-
-  let text = '';
-  Object.entries(byMarket).forEach(([market, marketEntries]) => {
-    marketEntries.sort((a, b) => b.weekOf.getTime() - a.weekOf.getTime());
-    text += `\n  ${market}:\n`;
-    marketEntries.forEach(entry => {
-      text += `    • ${formatDate(entry.weekOf)}: ${entry.details}\n`;
-    });
-  });
-
-  return text;
 }
 
 function formatDate(date: Date): string {

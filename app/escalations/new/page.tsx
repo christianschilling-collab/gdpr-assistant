@@ -10,6 +10,10 @@ import {
 } from '@/lib/types/escalations';
 import { useToast } from '@/lib/contexts/ToastContext';
 import { useAuth } from '@/lib/contexts/AuthContext';
+import {
+  resolveAssigneeInputToStoredEmail,
+  BOARD_UNASSIGNED,
+} from '@/lib/board/assigneeEmailDirectory';
 
 const SUBJECTS: EscalationSubject[] = [
   'Privacy',
@@ -54,6 +58,7 @@ export default function NewEscalationPage() {
     market: 'Germany' as EscalationMarket,
     classification: 'Customer' as EscalationClassification,
     cidOrEmail: '',
+    assignedTo: '',
     jiraReference: '',
     deadlineFirstReply: '',
     purecloudInteractionLink: '',
@@ -126,12 +131,28 @@ export default function NewEscalationPage() {
     setSubmitting(true);
     
     try {
+      const assigneeRaw = formData.assignedTo.trim();
+      const resolvedAssignee = assigneeRaw
+        ? await resolveAssigneeInputToStoredEmail(assigneeRaw)
+        : BOARD_UNASSIGNED;
+      if (
+        assigneeRaw &&
+        !assigneeRaw.includes('@') &&
+        resolvedAssignee === BOARD_UNASSIGNED
+      ) {
+        addToast(
+          'Assignee: bitte Arbeits-E-Mail eintragen oder in Admin → Users ein Profil mit Anzeigenamen anlegen.',
+          'warning'
+        );
+      }
+      const { assignedTo: _assignDraft, ...restForm } = formData;
       const escalationId = await createEscalation({
-        ...formData,
+        ...restForm,
         deadlineFirstReply: new Date(formData.deadlineFirstReply),
         relatedCases: [],
         status: 'Not Started',
         createdBy: user.email,
+        ...(resolvedAssignee !== BOARD_UNASSIGNED ? { assignedTo: resolvedAssignee } : {}),
       });
       
       addToast('Escalation created successfully', 'success');
@@ -152,10 +173,11 @@ export default function NewEscalationPage() {
     <div className="min-h-screen bg-gray-50 py-8 px-4">
       <div className="max-w-3xl mx-auto">
         <button
-          onClick={() => router.push('/incidents')}
+          type="button"
+          onClick={() => router.push('/escalations')}
           className="text-gray-600 hover:text-gray-900 mb-4 flex items-center gap-2"
         >
-          ← Back to List
+          ← Back to list
         </button>
 
         <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-8">
@@ -244,6 +266,32 @@ export default function NewEscalationPage() {
               </div>
             </div>
 
+            {/* Assignee (optional — trackboard owner) */}
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-2">
+                Assigned agent <span className="font-normal text-gray-500">(optional)</span>
+              </label>
+              <input
+                type="text"
+                value={formData.assignedTo}
+                onChange={(e) => setFormData({ ...formData, assignedTo: e.target.value })}
+                className="w-full px-3 py-2 border border-gray-300 rounded-lg"
+                placeholder="Name or work email — shown on GDPR trackboard"
+              />
+              {user?.email && (
+                <button
+                  type="button"
+                  onClick={() => setFormData({ ...formData, assignedTo: user.email || '' })}
+                  className="mt-2 text-sm text-blue-600 hover:text-blue-800"
+                >
+                  Use my account ({user.email})
+                </button>
+              )}
+              <p className="text-xs text-gray-500 mt-1">
+                Leave empty to create as unassigned; you can set this later on the escalation page.
+              </p>
+            </div>
+
             {/* CID or Email */}
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-2">
@@ -318,7 +366,7 @@ export default function NewEscalationPage() {
             <div className="flex gap-3 pt-4">
               <button
                 type="button"
-                onClick={() => router.push('/incidents')}
+                onClick={() => router.push('/escalations')}
                 className="px-6 py-2 border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 font-semibold"
                 disabled={submitting}
               >

@@ -1,5 +1,6 @@
 import { getDb } from './config';
 import { doc, setDoc, Timestamp } from 'firebase/firestore';
+import type { UserRole } from './users';
 
 /**
  * Manually add a new user to Firestore with specified role
@@ -7,7 +8,7 @@ import { doc, setDoc, Timestamp } from 'firebase/firestore';
  */
 export async function addNewUser(
   email: string,
-  role: 'admin' | 'agent' = 'agent',
+  role: UserRole = 'agent',
   displayName?: string
 ): Promise<void> {
   const db = getDb();

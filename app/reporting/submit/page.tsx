@@ -3,7 +3,8 @@
 import { useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
 import { upsertWeeklyReport } from '@/lib/firebase/weeklyReports';
-import type { WeeklyReport } from '@/lib/types';
+import type { WeeklyReport, WeeklyReportActivityItem } from '@/lib/types';
+import { ACTIVITY_LOG_KINDS, ACTIVITY_KIND_LABELS } from '@/lib/types';
 import { useToast } from '@/lib/contexts/ToastContext';
 import { useAuth } from '@/lib/contexts/AuthContext';
 import { LoginButton } from '@/components/LoginButton';
@@ -44,9 +45,13 @@ export default function WeeklyReportSubmitPage() {
 
   const [riskStatus, setRiskStatus] = useState<'green' | 'yellow' | 'red'>('green');
   const [riskExplanation, setRiskExplanation] = useState('');
-  const [escalationDetails, setEscalationDetails] = useState('');
-  const [currentInitiatives, setCurrentInitiatives] = useState('');
-  const [winsGoodNews, setWinsGoodNews] = useState('');
+
+  const emptyActivityRow = (): WeeklyReportActivityItem => ({
+    kind: 'observation',
+    title: '',
+    description: '',
+  });
+  const [activityItems, setActivityItems] = useState<WeeklyReportActivityItem[]>([emptyActivityRow()]);
 
   const [submitting, setSubmitting] = useState(false);
 
@@ -73,6 +78,10 @@ export default function WeeklyReportSubmitPage() {
 
     setSubmitting(true);
     try {
+      const filledItems = activityItems.filter(
+        row => row.title.trim() || row.description.trim()
+      );
+
       const payload: Omit<WeeklyReport, 'id' | 'createdAt' | 'updatedAt'> = {
         market,
         weekOf: weekOfDate,
@@ -88,9 +97,7 @@ export default function WeeklyReportSubmitPage() {
         noteworthyEdgeCases: 0,
         riskStatus,
         riskExplanation: normalizeWeeklyReportOptionalText(riskExplanation),
-        escalationDetails: normalizeWeeklyReportOptionalText(escalationDetails),
-        currentInitiatives: normalizeWeeklyReportOptionalText(currentInitiatives),
-        winsGoodNews: normalizeWeeklyReportOptionalText(winsGoodNews),
+        ...(filledItems.length > 0 ? { activityItems: filledItems } : {}),
       };
 
       const { created } = await upsertWeeklyReport(payload);
@@ -124,7 +131,7 @@ export default function WeeklyReportSubmitPage() {
           <div className="mt-6 flex justify-center">
             <LoginButton />
           </div>
-          <Link href="/reporting/view" className="inline-block mt-6 text-sm text-emerald-700 hover:underline">
+          <Link href="/reporting" className="inline-block mt-6 text-sm text-emerald-700 hover:underline">
             View public reporting dashboard
           </Link>
         </div>
@@ -136,7 +143,7 @@ export default function WeeklyReportSubmitPage() {
     <div className="max-w-3xl mx-auto px-4 py-8 pb-16">
       <div className="mb-8">
         <p className="text-sm text-emerald-800 font-medium">
-          <Link href="/reporting/view" className="hover:underline">
+          <Link href="/reporting" className="hover:underline">
             Reporting
           </Link>
           <span className="mx-2 text-gray-400">/</span>
@@ -148,8 +155,8 @@ export default function WeeklyReportSubmitPage() {
           for the same market and week <strong>updates</strong> the existing row and refreshes linked activity highlights.
         </p>
         <p className="text-gray-500 mt-2 text-xs leading-relaxed">
-          This form only asks for data that flows into the <strong>monthly GDPR email</strong> and dashboard: request volumes,
-          risk traffic light, and short notes that become <strong>highlights / lowlights</strong> (same logic as the CSV import).
+          Request volumes and risk feed the dashboard. Use <strong>activity rows</strong> below for structured notes (type,
+          optional title, description) — they appear grouped in the report and monthly GDPR email.
         </p>
       </div>
 
@@ -250,42 +257,91 @@ export default function WeeklyReportSubmitPage() {
 
         <section className="space-y-4">
           <h2 className="text-sm font-bold text-gray-900 uppercase tracking-wide border-b border-gray-100 pb-2">
-            Notes for the monthly email (optional)
+            Activity notes (optional)
           </h2>
           <p className="text-xs text-gray-500 -mt-2">
-            Only these three fields are turned into activity-log lines that appear in the GDPR report highlights and lowlights.
-            Leave blank if there is nothing to say.
+            Add a row per topic. <strong>Type</strong> controls where it appears (wins &amp; initiatives vs complaints &amp;
+            incidents). <strong>Title</strong> is optional; <strong>description</strong> is the main text.
           </p>
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">Escalation details</label>
-            <p className="text-xs text-gray-500 mb-1">Becomes an escalation line in the report (lowlights / attention).</p>
-            <textarea
-              value={escalationDetails}
-              onChange={e => setEscalationDetails(e.target.value)}
-              rows={3}
-              className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500"
-            />
+
+          <div className="space-y-4">
+            {activityItems.map((row, idx) => (
+              <div
+                key={idx}
+                className="border border-gray-200 rounded-lg p-4 space-y-3 bg-gray-50/50"
+              >
+                <div className="flex flex-wrap gap-3 items-end justify-between">
+                  <div className="flex-1 min-w-[200px]">
+                    <label className="block text-sm font-medium text-gray-700 mb-1">Classification</label>
+                    <select
+                      value={row.kind}
+                      onChange={e =>
+                        setActivityItems(prev =>
+                          prev.map((r, i) =>
+                            i === idx ? { ...r, kind: e.target.value as WeeklyReportActivityItem['kind'] } : r
+                          )
+                        )
+                      }
+                      className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 bg-white"
+                    >
+                      {ACTIVITY_LOG_KINDS.map(k => (
+                        <option key={k} value={k}>
+                          {ACTIVITY_KIND_LABELS[k]}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setActivityItems(prev =>
+                        prev.length <= 1 ? [emptyActivityRow()] : prev.filter((_, i) => i !== idx)
+                      )
+                    }
+                    className="text-sm text-red-700 hover:underline px-2 py-1"
+                  >
+                    Remove row
+                  </button>
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Title (optional)</label>
+                  <input
+                    type="text"
+                    value={row.title}
+                    onChange={e =>
+                      setActivityItems(prev =>
+                        prev.map((r, i) => (i === idx ? { ...r, title: e.target.value } : r))
+                      )
+                    }
+                    placeholder="Short headline, e.g. IBAN mix-up"
+                    className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 bg-white"
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Description</label>
+                  <textarea
+                    value={row.description}
+                    onChange={e =>
+                      setActivityItems(prev =>
+                        prev.map((r, i) => (i === idx ? { ...r, description: e.target.value } : r))
+                      )
+                    }
+                    rows={3}
+                    placeholder="Context, status, links…"
+                    className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 bg-white"
+                  />
+                </div>
+              </div>
+            ))}
           </div>
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">Current initiatives</label>
-            <p className="text-xs text-gray-500 mb-1">Shown under initiatives in highlights.</p>
-            <textarea
-              value={currentInitiatives}
-              onChange={e => setCurrentInitiatives(e.target.value)}
-              rows={3}
-              className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500"
-            />
-          </div>
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">Wins / good news</label>
-            <p className="text-xs text-gray-500 mb-1">Shown as a win in highlights (with a checkmark in the email).</p>
-            <textarea
-              value={winsGoodNews}
-              onChange={e => setWinsGoodNews(e.target.value)}
-              rows={2}
-              className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500"
-            />
-          </div>
+
+          <button
+            type="button"
+            onClick={() => setActivityItems(prev => [...prev, emptyActivityRow()])}
+            className="text-sm font-medium text-emerald-700 hover:text-emerald-800"
+          >
+            + Add another row
+          </button>
         </section>
 
         <div className="flex flex-wrap items-center gap-3 pt-2">
@@ -296,10 +352,7 @@ export default function WeeklyReportSubmitPage() {
           >
             {submitting ? 'Saving…' : 'Save weekly report'}
           </button>
-          <Link href="/reporting/upload" className="text-sm text-gray-600 hover:text-emerald-700 hover:underline">
-            Bulk CSV import
-          </Link>
-          <Link href="/reporting/view" className="text-sm text-gray-600 hover:text-emerald-700 hover:underline">
+          <Link href="/reporting" className="text-sm text-gray-600 hover:text-emerald-700 hover:underline">
             View dashboard
           </Link>
         </div>
