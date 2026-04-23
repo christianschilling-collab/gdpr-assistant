@@ -5,11 +5,12 @@ import { useAuth } from '@/lib/contexts/AuthContext';
 import { signInWithGoogle, signOutUser } from '@/lib/firebase/auth';
 
 export function LoginButton() {
-  const { user, loading } = useAuth();
+  const { user, loading, clearAccessNotice } = useAuth();
   const [signingIn, setSigningIn] = useState(false);
   const [signInError, setSignInError] = useState<string | null>(null);
 
   async function handleSignIn() {
+    clearAccessNotice();
     setSignInError(null);
     try {
       setSigningIn(true);

@@ -4,61 +4,34 @@ import { useState, useEffect } from 'react';
 import Link from 'next/link';
 import { getWeeklyReports, getActivityLog } from '@/lib/firebase/weeklyReports';
 import { generateTrainingReport } from '@/lib/firebase/trainingCases';
-import { getMarketDeepDive } from '@/lib/firebase/marketDeepDive';
 import { WeeklyReport, ActivityLogEntry } from '@/lib/types';
 import { TrainingReport } from '@/lib/types/training';
 import { MarketDeepDive } from '@/lib/types/marketDeepDive';
 import { BarChart, Bar, LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts';
 import { useAuth } from '@/lib/contexts/AuthContext';
 import { LoginButton } from '@/components/LoginButton';
+import { useToast } from '@/lib/contexts/ToastContext';
+import { buildMergedMarketDeepDive } from '@/lib/reporting/marketDeepDiveMerge';
+import {
+  calculateMonthlySummary,
+  extractHighlights,
+  formatMonthDisplay,
+  getMarketBreakdown,
+  getMarketStatusData,
+  getGreenMarkets,
+} from '@/lib/reporting/reportMetrics';
+import { generateMonthlySummaryHTML, translateErrorDescription } from '@/lib/reporting/gdprEmailReport';
 
 type ViewMode = 'week' | 'month';
 
-// German to English mapping for error descriptions
-function translateErrorDescription(germanText: string): string {
-  const mappings: Record<string, string> = {
-    // Main categories (exact matches)
-    'Werbewiderruf: Präferenzen im Kundenkonto nicht deaktiviert': 'Marketing Opt-Out: Preferences not deactivated in customer account',
-    'Allg. Ticketfehler: Falsche Kategorie gewählt': 'General Ticket Error: Wrong category selected',
-    'Falsche Länder-Angabe im Ticket (DE/CH/AT)': 'Wrong country specified in ticket (DE/CH/AT)',
-    'Ticket unvollständig (z.B. Kundennummer fehlt)': 'Incomplete ticket (e.g., customer number missing)',
-    'Data Deletion/Removal - Konto wurde nicht gekündigt': 'Data Deletion/Removal: Account not cancelled',
-    'Kunden-Verifikation angefordert anstelle Data-Privacy-Anliegen per Jira-Ticket zu eskalieren': 'Customer verification requested instead of escalating data privacy issue via Jira',
-    'Sonstige falsche Bearbeitung (bitte im Kommentar ergänzen)': 'Other incorrect processing (see notes)',
-    
-    // Partial matches (fallback)
-    'Werbewiderruf': 'Marketing Opt-Out',
-    'Präferenzen': 'Preferences not deactivated',
-    'Falsche Kategorie': 'Wrong category selected',
-    'Falsche Länder': 'Wrong country specified',
-    'Ticket unvollständig': 'Incomplete ticket',
-    'Datenlöschung': 'Data Deletion',
-    'Konto nicht gekündigt': 'Account not cancelled',
-    'Verifikation': 'Customer verification issue',
-    'Sonstige': 'Other',
-  };
-  
-  // Try exact match first
-  if (mappings[germanText]) {
-    return mappings[germanText];
-  }
-  
-  // Try partial matches
-  for (const [german, english] of Object.entries(mappings)) {
-    if (germanText.includes(german)) {
-      return english;
-    }
-  }
-  
-  // Return original if no match (already in English or new category)
-  return germanText;
-}
-
 export default function ReportingPage() {
   const { user, loading: authLoading } = useAuth();
+  const { showToast } = useToast();
   const [reports, setReports] = useState<WeeklyReport[]>([]);
   const [activityLog, setActivityLog] = useState<ActivityLogEntry[]>([]);
   const [trainingReport, setTrainingReport] = useState<TrainingReport | null>(null);
+  const [marketDeepDive, setMarketDeepDive] = useState<MarketDeepDive | null>(null);
+  const [previousMonthDeepDive, setPreviousMonthDeepDive] = useState<MarketDeepDive | null>(null);
   const [loading, setLoading] = useState(true);
   const [selectedMarket, setSelectedMarket] = useState<string>('all');
   const [viewMode, setViewMode] = useState<ViewMode>('month');
@@ -90,6 +63,20 @@ export default function ReportingPage() {
       } catch (err) {
         console.log('No training data available for this month');
         setTrainingReport(null);
+      }
+
+      try {
+        const prevMonthKey = getPreviousMonth(selectedMonth);
+        const [currentDive, prevDive] = await Promise.all([
+          buildMergedMarketDeepDive(selectedMonth),
+          buildMergedMarketDeepDive(prevMonthKey),
+        ]);
+        setMarketDeepDive(currentDive);
+        setPreviousMonthDeepDive(prevDive);
+      } catch (error) {
+        console.warn('Market Deep Dive not available:', error);
+        setMarketDeepDive(null);
+        setPreviousMonthDeepDive(null);
       }
     } catch (error) {
       console.error('Error loading reporting data:', error);
@@ -142,7 +129,7 @@ export default function ReportingPage() {
   async function copyActivityLog(activities: ActivityLogEntry[]) {
     const text = generateActivityLogText(activities);
     await navigator.clipboard.writeText(text);
-    alert('✅ Activity Log copied to clipboard!');
+    showToast('Activity log copied to clipboard.');
   }
 
   function formatMonthKey(date: Date): string {
@@ -164,26 +151,28 @@ export default function ReportingPage() {
     return `${nextYear}-${String(nextMonth).padStart(2, '0')}`;
   }
 
-  function formatMonthDisplay(monthKey: string): string {
-    const [year, month] = monthKey.split('-');
-    const date = new Date(parseInt(year), parseInt(month) - 1);
-    return date.toLocaleDateString('en-US', { month: 'long', year: 'numeric' });
-  }
-
   async function copyMonthlySummary() {
-    const htmlSummary = generateMonthlySummaryHTML(monthlySummary, previousMonthlySummary, highlights, selectedMonth, filteredReports, filteredActivityLog);
-    
-    // Create a temporary element to copy HTML
+    const htmlSummary = generateMonthlySummaryHTML(
+      monthlySummary,
+      previousMonthlySummary,
+      highlights,
+      selectedMonth,
+      filteredReports,
+      filteredActivityLog,
+      trainingReport,
+      marketDeepDive,
+      previousMonthDeepDive
+    );
+
     const blob = new Blob([htmlSummary], { type: 'text/html' });
     const data = [new ClipboardItem({ 'text/html': blob })];
-    
+
     try {
       await navigator.clipboard.write(data);
-      alert('✅ HTML Report copied! Paste directly into your email.');
+      showToast('GDPR report copied. Paste directly into your email.');
     } catch (err) {
-      // Fallback: copy as text
       await navigator.clipboard.writeText(htmlSummary);
-      alert('✅ HTML copied as text! Paste into your email (HTML mode).');
+      showToast('HTML copied as plain text. Paste into your email (HTML mode).', 'info');
     }
   }
 
@@ -262,6 +251,11 @@ export default function ReportingPage() {
             <div>
               <h1 className="text-3xl font-bold text-gray-900">GDPR Reporting Dashboard</h1>
               <p className="text-gray-600 mt-1">HelloFresh - European Markets Overview</p>
+              <p className="mt-2 text-sm">
+                <Link href="/reporting/submit" className="text-emerald-700 font-medium hover:underline">
+                  Submit weekly market data (sign-in required)
+                </Link>
+              </p>
             </div>
           </div>
         </div>
@@ -782,75 +776,6 @@ function HighlightsCard({ title, items, type }: { title: string; items: string[]
 
 // Helper Functions
 
-function getMarketBreakdown(reports: WeeklyReport[]) {
-  const markets = ['DACH', 'France', 'Nordics', 'NL', 'Be / Lux'];
-  
-  return markets.map(market => {
-    const marketReports = reports.filter(r => r.market === market);
-    
-    // Get latest report for status
-    const latestReport = marketReports.length > 0 
-      ? marketReports.reduce((latest, r) => r.weekOf > latest.weekOf ? r : latest)
-      : null;
-    
-    return {
-      market,
-      deletion: marketReports.reduce((sum, r) => sum + r.deletionRequests, 0),
-      portability: marketReports.reduce((sum, r) => sum + r.portabilityRequests, 0),
-      legalSupport: marketReports.reduce((sum, r) => sum + r.legalEscalations + r.regulatorInquiries + r.privacyIncidents, 0),
-      status: latestReport?.riskStatus || 'green',
-    };
-  });
-}
-
-function calculateMonthlySummary(reports: WeeklyReport[], month: string) {
-  const totalDeletionRequests = reports.reduce((sum, r) => sum + r.deletionRequests, 0);
-  const totalPortabilityRequests = reports.reduce((sum, r) => sum + r.portabilityRequests, 0);
-  const totalRequests = totalDeletionRequests + totalPortabilityRequests;
-  const totalEscalations = reports.reduce((sum, r) => sum + r.legalEscalations + r.regulatorInquiries + r.privacyIncidents, 0);
-  const marketsAtRisk = new Set(reports.filter(r => r.riskStatus === 'yellow' || r.riskStatus === 'red').map(r => r.market)).size;
-  const avgBacklog = reports.length > 0 ? reports.reduce((sum, r) => sum + r.currentBacklog, 0) / reports.length : 0;
-  
-  return { totalRequests, totalDeletionRequests, totalPortabilityRequests, totalEscalations, marketsAtRisk, avgBacklog };
-}
-
-function getMarketStatusData(reports: WeeklyReport[]) {
-  // Get latest report per market
-  const marketMap = new Map<string, WeeklyReport>();
-  
-  reports.forEach(report => {
-    const existing = marketMap.get(report.market);
-    if (!existing || report.weekOf > existing.weekOf) {
-      marketMap.set(report.market, report);
-    }
-  });
-
-  return Array.from(marketMap.values()).map(r => ({
-    market: r.market,
-    status: r.riskStatus,
-    reason: r.riskExplanation || (r.riskStatus === 'green' ? 'All systems operational' : 'No explanation provided'),
-  }));
-}
-
-function getGreenMarkets(reports: WeeklyReport[]) {
-  // Get latest report per market
-  const marketMap = new Map<string, WeeklyReport>();
-  
-  reports.forEach(report => {
-    const existing = marketMap.get(report.market);
-    if (!existing || report.weekOf > existing.weekOf) {
-      marketMap.set(report.market, report);
-    }
-  });
-
-  return Array.from(marketMap.values())
-    .filter(r => r.riskStatus === 'green')
-    .map(r => ({
-      market: r.market,
-      requests: r.deletionRequests + r.portabilityRequests,
-    }));
-}
-
 function prepareMarketTrendData(reports: WeeklyReport[], market: string) {
   const marketReports = reports
     .filter(r => r.market === market)
@@ -866,44 +791,6 @@ function prepareMarketTrendData(reports: WeeklyReport[], market: string) {
 function formatDateShort(date: Date): string {
   const d = new Date(date);
   return `${d.getMonth() + 1}/${d.getDate()}`;
-}
-
-function calculateMonthlySummary_OLD(reports: WeeklyReport[], month: string) {
-  const totalRequests = reports.reduce((sum, r) => sum + r.deletionRequests + r.portabilityRequests, 0);
-  const totalEscalations = reports.reduce((sum, r) => sum + r.legalEscalations + r.regulatorInquiries + r.privacyIncidents, 0);
-  const marketsAtRisk = new Set(reports.filter(r => r.riskStatus === 'yellow' || r.riskStatus === 'red').map(r => r.market)).size;
-  const avgBacklog = reports.length > 0 ? reports.reduce((sum, r) => sum + r.currentBacklog, 0) / reports.length : 0;
-  
-  return { totalRequests, totalEscalations, marketsAtRisk, avgBacklog };
-}
-
-function extractHighlights(reports: WeeklyReport[], activityLog: ActivityLogEntry[]) {
-  const negative: string[] = [];
-  const positive: string[] = [];
-  
-  // From reports
-  reports.forEach(r => {
-    if (r.riskStatus === 'red') {
-      negative.push(`${r.market}: Red status${r.escalationDetails ? ` - ${r.escalationDetails}` : ''}`);
-    }
-    if (r.legalEscalations > 0) {
-      negative.push(`${r.market}: ${r.legalEscalations} legal escalation(s)`);
-    }
-    if (r.riskStatus === 'green' && r.deletionRequests + r.portabilityRequests > 0) {
-      positive.push(`${r.market}: All green, ${r.deletionRequests + r.portabilityRequests} requests handled`);
-    }
-  });
-  
-  // From activity log
-  activityLog.forEach(a => {
-    if (a.category === 'Escalation') {
-      negative.push(`${a.market}: ${a.details}`);
-    } else if (a.details.startsWith('✅')) {
-      positive.push(`${a.market}: ${a.details.replace('✅ ', '')}`);
-    }
-  });
-  
-  return { negative: negative.slice(0, 5), positive: positive.slice(0, 5) };
 }
 
 function prepareTrendsData(reports: WeeklyReport[], currentMonth: string) {
@@ -967,276 +854,6 @@ function generateTextualSummary(
   }
 
   return summary;
-}
-
-function generateMonthlySummaryText(current: any, previous: any, highlights: any, selectedMonth: string, reports: WeeklyReport[], activityLog: ActivityLogEntry[]): string {
-  const monthName = formatMonthDisplay(selectedMonth);
-  let text = `═══════════════════════════════════════════════════════════\n`;
-  text += `  GDPR MONTHLY REPORT - ${monthName}\n`;
-  text += `═══════════════════════════════════════════════════════════\n\n`;
-  
-  // Textual Summary
-  text += `📝 EXECUTIVE SUMMARY\n`;
-  text += `${'─'.repeat(60)}\n`;
-  text += generateTextualSummary(current, previous, reports, selectedMonth);
-  text += `\n\n`;
-  
-  // Data Table
-  text += `📊 REQUEST VOLUME BY MARKET\n`;
-  text += `${'─'.repeat(60)}\n`;
-  const breakdown = getMarketBreakdown(reports);
-  breakdown.forEach(m => {
-    text += `${m.market.padEnd(15)} | `;
-    text += `Deletion: ${String(m.deletion).padStart(3)} | `;
-    text += `Portability: ${String(m.portability).padStart(3)} | `;
-    text += `Legal: ${String(m.legalSupport).padStart(2)} | `;
-    text += `Status: ${m.status === 'green' ? '🟢' : m.status === 'yellow' ? '🟡' : '🔴'}\n`;
-  });
-  text += `${'─'.repeat(60)}\n`;
-  text += `TOTAL           | Deletion: ${String(current.totalDeletionRequests).padStart(3)} | `;
-  text += `Portability: ${String(current.totalPortabilityRequests).padStart(3)} | `;
-  text += `Legal: ${String(current.totalEscalations).padStart(2)}\n\n`;
-  
-  // Highlights (Wins + Initiatives)
-  text += `✅ HIGHLIGHTS\n`;
-  text += `${'─'.repeat(60)}\n`;
-  const wins = activityLog.filter(a => a.category === 'Win');
-  const initiatives = activityLog.filter(a => a.category === 'Initiative');
-  
-  if (wins.length > 0) {
-    text += `\n🎉 Wins & Achievements:\n`;
-    wins.forEach(w => {
-      text += `  • [${w.market}] ${w.details}\n`;
-    });
-  }
-  
-  if (initiatives.length > 0) {
-    text += `\n📊 Current Initiatives:\n`;
-    initiatives.forEach(i => {
-      text += `  • [${i.market}] ${i.details}\n`;
-    });
-  }
-  
-  if (wins.length === 0 && initiatives.length === 0) {
-    text += `No major wins or initiatives reported this month.\n`;
-  }
-  text += `\n`;
-  
-  // Lowlights (Risk Status + Escalations)
-  text += `⚠️  LOWLIGHTS & ATTENTION AREAS\n`;
-  text += `${'─'.repeat(60)}\n`;
-  
-  const atRiskMarkets = getMarketStatusData(reports).filter(m => m.status === 'yellow' || m.status === 'red');
-  if (atRiskMarkets.length > 0) {
-    text += `\n🚦 Markets Requiring Attention:\n`;
-    atRiskMarkets.forEach(m => {
-      text += `  ${m.status === 'red' ? '🔴' : '🟡'} ${m.market}: ${m.reason}\n`;
-    });
-  }
-  
-  const escalations = activityLog.filter(a => a.category === 'Escalation');
-  if (escalations.length > 0) {
-    text += `\n🚨 Noteworthy Complaints & Issues:\n`;
-    escalations.forEach(e => {
-      text += `  • [${e.market}] ${e.details}\n`;
-    });
-  }
-  
-  if (atRiskMarkets.length === 0 && escalations.length === 0) {
-    text += `All markets green - no major issues to report! 🎉\n`;
-  }
-  
-  text += `\n═══════════════════════════════════════════════════════════\n`;
-  text += `Report generated: ${new Date().toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' })}\n`;
-  text += `═══════════════════════════════════════════════════════════\n`;
-  
-  return text;
-}
-
-function generateMonthlySummaryHTML(current: any, previous: any, highlights: any, selectedMonth: string, reports: WeeklyReport[], activityLog: ActivityLogEntry[]): string {
-  const monthName = formatMonthDisplay(selectedMonth);
-  const breakdown = getMarketBreakdown(reports);
-  
-  const marketRows = breakdown.map(m => {
-    const statusEmoji = m.status === 'green' ? '🟢' : m.status === 'yellow' ? '🟡' : '🔴';
-    const statusClass = m.status === 'green' ? 'status-green' : m.status === 'yellow' ? 'status-yellow' : 'status-red';
-    return `
-          <tr>
-            <td><strong>${m.market}</strong></td>
-            <td style="text-align: center;">${m.deletion}</td>
-            <td style="text-align: center;">${m.portability}</td>
-            <td style="text-align: center;">${m.legalSupport}</td>
-            <td style="text-align: center;" class="${statusClass}">
-              ${statusEmoji}
-            </td>
-          </tr>`;
-  }).join('');
-  
-  return `
-<!DOCTYPE html>
-<html>
-<head>
-  <meta charset="UTF-8">
-  <style>
-    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Arial, sans-serif; line-height: 1.6; color: #333; max-width: 800px; margin: 0 auto; }
-    .header { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 30px; text-align: center; border-radius: 8px 8px 0 0; }
-    .header h1 { margin: 0; font-size: 24px; font-weight: 600; }
-    .header p { margin: 5px 0 0 0; opacity: 0.9; font-size: 14px; }
-    .section { background: #f8f9fa; padding: 20px; margin: 0; border-bottom: 1px solid #e0e0e0; }
-    .section h2 { margin: 0 0 15px 0; font-size: 18px; color: #1a1a1a; display: flex; align-items: center; gap: 8px; }
-    .section p { margin: 0; color: #4a4a4a; font-size: 15px; line-height: 1.7; }
-    table { width: 100%; border-collapse: collapse; margin: 15px 0; background: white; }
-    th { background: #f0f0f0; padding: 12px; text-align: left; font-size: 13px; font-weight: 600; color: #555; border-bottom: 2px solid #ddd; }
-    td { padding: 10px 12px; border-bottom: 1px solid #eee; font-size: 14px; }
-    tr:hover { background: #f9f9f9; }
-    .status-green { color: #22c55e; font-size: 18px; }
-    .status-yellow { color: #eab308; font-size: 18px; }
-    .status-red { color: #ef4444; font-size: 18px; }
-    .highlight-box { background: #d1fae5; border-left: 4px solid #22c55e; padding: 15px; margin: 10px 0; border-radius: 4px; }
-    .lowlight-box { background: #fee2e2; border-left: 4px solid #ef4444; padding: 15px; margin: 10px 0; border-radius: 4px; }
-    .attention-box { background: #fef3c7; border-left: 4px solid #eab308; padding: 15px; margin: 10px 0; border-radius: 4px; }
-    ul { margin: 10px 0; padding-left: 20px; }
-    li { margin: 5px 0; color: #4a4a4a; }
-    .market-tag { display: inline-block; background: #e0e7ff; color: #4338ca; padding: 2px 8px; border-radius: 4px; font-size: 12px; font-weight: 600; margin-right: 5px; }
-    .footer { background: #f8f9fa; padding: 20px; text-align: center; color: #888; font-size: 12px; border-radius: 0 0 8px 8px; }
-    .total-row { font-weight: 600; background: #f0f0f0; }
-    a { color: #667eea; text-decoration: none; }
-    a:hover { text-decoration: underline; }
-  </style>
-</head>
-<body>
-  <div class="header">
-    <h1>📊 GDPR Monthly Report - ${monthName}</h1>
-    <p>European Markets Privacy Compliance Summary</p>
-  </div>
-
-  <div class="section">
-    <h2>📝 Summary</h2>
-    <p>${generateTextualSummary(current, previous, reports, selectedMonth)}</p>
-  </div>
-
-  <div class="section">
-    <h2>📊 Request Volume by Market</h2>
-    <table>
-      <thead>
-        <tr>
-          <th>Market</th>
-          <th style="text-align: center;">Deletion</th>
-          <th style="text-align: center;">Portability</th>
-          <th style="text-align: center;">Legal Support</th>
-          <th style="text-align: center;">Status</th>
-        </tr>
-      </thead>
-      <tbody>
-        ${marketRows}
-        <tr class="total-row">
-          <td><strong>TOTAL</strong></td>
-          <td style="text-align: center;">${current.totalDeletionRequests}</td>
-          <td style="text-align: center;">${current.totalPortabilityRequests}</td>
-          <td style="text-align: center;">${current.totalEscalations}</td>
-          <td></td>
-        </tr>
-      </tbody>
-    </table>
-  </div>
-
-  <div class="section">
-    <h2>✅ Highlights</h2>
-    ${generateHighlightsHTML(activityLog)}
-  </div>
-
-  <div class="section">
-    <h2>⚠️ Lowlights & Attention Areas</h2>
-    ${generateLowlightsHTML(reports, activityLog)}
-  </div>
-
-  <div class="footer">
-    <p><a href="https://gdpr-assistant.hellofresh.com/reporting/view" target="_blank">Report</a> generated on ${new Date().toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' })}</p>
-    <p style="margin: 8px 0 0 0;"><strong>HelloFresh GDPR Team</strong></p>
-    <p style="margin: 8px 0 0 0; font-size: 11px; color: #999;">Thank you to our market teams for your help creating this report.</p>
-  </div>
-</body>
-</html>
-  `.trim();
-}
-
-function generateHighlightsHTML(activityLog: ActivityLogEntry[]): string {
-  const wins = activityLog.filter(a => a.category === 'Win');
-  const initiatives = activityLog.filter(a => a.category === 'Initiative');
-  
-  let html = '';
-  
-  if (wins.length > 0) {
-    html += '<div class="highlight-box">';
-    html += '<h3 style="margin: 0 0 10px 0; font-size: 16px;">🎉 Wins & Achievements</h3>';
-    html += '<ul style="margin: 5px 0;">';
-    wins.forEach(w => {
-      html += `<li><span class="market-tag">${w.market}</span>${w.details}</li>`;
-    });
-    html += '</ul>';
-    html += '</div>';
-  }
-  
-  if (initiatives.length > 0) {
-    html += '<div class="highlight-box">';
-    html += '<h3 style="margin: 0 0 10px 0; font-size: 16px;">📊 Current Initiatives</h3>';
-    html += '<ul style="margin: 5px 0;">';
-    initiatives.forEach(i => {
-      html += `<li><span class="market-tag">${i.market}</span>${i.details}</li>`;
-    });
-    html += '</ul>';
-    html += '</div>';
-  }
-  
-  if (wins.length === 0 && initiatives.length === 0) {
-    html += '<p style="color: #888; font-style: italic;">No major wins or initiatives reported this month.</p>';
-  }
-  
-  return html;
-}
-
-function generateLowlightsHTML(reports: WeeklyReport[], activityLog: ActivityLogEntry[]): string {
-  const atRiskMarkets = getMarketStatusData(reports).filter(m => m.status === 'yellow' || m.status === 'red');
-  const escalations = activityLog.filter(a => a.category === 'Escalation');
-  
-  let html = '';
-  
-  if (atRiskMarkets.length > 0) {
-    html += '<div class="attention-box">';
-    html += '<h3 style="margin: 0 0 10px 0; font-size: 16px;">🚦 Markets Requiring Attention</h3>';
-    html += '<ul style="margin: 5px 0;">';
-    atRiskMarkets.forEach(m => {
-      const emoji = m.status === 'red' ? '🔴' : '🟡';
-      html += `<li>${emoji} <span class="market-tag">${m.market}</span>${m.reason}</li>`;
-    });
-    html += '</ul>';
-    html += '</div>';
-  }
-  
-  if (escalations.length > 0) {
-    html += '<div class="lowlight-box">';
-    html += '<h3 style="margin: 0 0 10px 0; font-size: 16px;">🚨 Noteworthy Complaints & Issues</h3>';
-    html += '<ul style="margin: 5px 0;">';
-    escalations.forEach(e => {
-      html += `<li><span class="market-tag">${e.market}</span>${e.details}</li>`;
-    });
-    html += '</ul>';
-    html += '</div>';
-  }
-  
-  if (atRiskMarkets.length === 0 && escalations.length === 0) {
-    html += '<div class="highlight-box">';
-    html += '<p style="margin: 0; color: #059669; font-weight: 500;">🎉 All markets green - no major issues to report!</p>';
-    html += '</div>';
-  }
-  
-  return html;
-}
-
-function formatMonthDisplay(monthKey: string): string {
-  const [year, month] = monthKey.split('-');
-  const date = new Date(parseInt(year), parseInt(month) - 1);
-  return date.toLocaleDateString('en-US', { month: 'long', year: 'numeric' });
 }
 
 function generateCSV(reports: WeeklyReport[]): string {

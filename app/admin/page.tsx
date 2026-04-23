@@ -214,14 +214,14 @@ export default function AdminDashboardPage() {
       title: 'Weekly Reports Upload',
       description: 'Import weekly market reports from CSV',
       icon: 'upload',
-      href: '/admin/reporting/upload',
+      href: '/reporting/upload',
       color: 'teal',
     },
     {
       title: 'Market Deep Dive',
       description: 'Create monthly Market Deep Dive reports for management',
       icon: 'chart',
-      href: '/admin/market-deep-dive',
+      href: '/reporting/overrides',
       color: 'purple',
     },
     {

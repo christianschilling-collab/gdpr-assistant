@@ -4,61 +4,30 @@ import { useState, useEffect } from 'react';
 import Link from 'next/link';
 import { getWeeklyReports, getActivityLog } from '@/lib/firebase/weeklyReports';
 import { generateTrainingReport } from '@/lib/firebase/trainingCases';
-import { getMarketDeepDive } from '@/lib/firebase/marketDeepDive';
-import { getAllCases } from '@/lib/firebase/cases';
-import { getCategories } from '@/lib/firebase/categories';
 import { WeeklyReport, ActivityLogEntry } from '@/lib/types';
 import { TrainingReport } from '@/lib/types/training';
 import { MarketDeepDive, MarketData } from '@/lib/types/marketDeepDive';
 import { BarChart, Bar, LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts';
+import { useToast } from '@/lib/contexts/ToastContext';
+import { buildMergedMarketDeepDive } from '@/lib/reporting/marketDeepDiveMerge';
+import {
+  calculateMonthlySummary,
+  extractHighlights,
+  formatMonthDisplay,
+  getMarketBreakdown,
+  getMarketStatusData,
+} from '@/lib/reporting/reportMetrics';
+import { generateMonthlySummaryHTML, translateErrorDescription } from '@/lib/reporting/gdprEmailReport';
 
 type ViewMode = 'week' | 'month';
 
-// German to English mapping for error descriptions
-function translateErrorDescription(germanText: string): string {
-  const mappings: Record<string, string> = {
-    // Main categories (exact matches)
-    'Werbewiderruf: Präferenzen im Kundenkonto nicht deaktiviert': 'Marketing Opt-Out: Preferences not deactivated in customer account',
-    'Allg. Ticketfehler: Falsche Kategorie gewählt': 'General Ticket Error: Wrong category selected',
-    'Falsche Länder-Angabe im Ticket (DE/CH/AT)': 'Wrong country specified in ticket (DE/CH/AT)',
-    'Ticket unvollständig (z.B. Kundennummer fehlt)': 'Incomplete ticket (e.g., customer number missing)',
-    'Data Deletion/Removal - Konto wurde nicht gekündigt': 'Data Deletion/Removal: Account not cancelled',
-    'Kunden-Verifikation angefordert anstelle Data-Privacy-Anliegen per Jira-Ticket zu eskalieren': 'Customer verification requested instead of escalating data privacy issue via Jira',
-    'Sonstige falsche Bearbeitung (bitte im Kommentar ergänzen)': 'Other incorrect processing (see notes)',
-    
-    // Partial matches (fallback)
-    'Werbewiderruf': 'Marketing Opt-Out',
-    'Präferenzen': 'Preferences not deactivated',
-    'Falsche Kategorie': 'Wrong category selected',
-    'Falsche Länder': 'Wrong country specified',
-    'Ticket unvollständig': 'Incomplete ticket',
-    'Datenlöschung': 'Data Deletion',
-    'Konto nicht gekündigt': 'Account not cancelled',
-    'Verifikation': 'Customer verification issue',
-    'Sonstige': 'Other',
-  };
-  
-  // Try exact match first
-  if (mappings[germanText]) {
-    return mappings[germanText];
-  }
-  
-  // Try partial matches
-  for (const [german, english] of Object.entries(mappings)) {
-    if (germanText.includes(german)) {
-      return english;
-    }
-  }
-  
-  // Return original if no match (already in English or new category)
-  return germanText;
-}
-
 export default function ReportingPage() {
+  const { showToast } = useToast();
   const [reports, setReports] = useState<WeeklyReport[]>([]);
   const [activityLog, setActivityLog] = useState<ActivityLogEntry[]>([]);
   const [trainingReport, setTrainingReport] = useState<TrainingReport | null>(null);
   const [marketDeepDive, setMarketDeepDive] = useState<MarketDeepDive | null>(null);
+  const [previousMonthDeepDive, setPreviousMonthDeepDive] = useState<MarketDeepDive | null>(null);
   const [loading, setLoading] = useState(true);
   const [selectedMarket, setSelectedMarket] = useState<string>('all');
   const [viewMode, setViewMode] = useState<ViewMode>('month');
@@ -90,81 +59,21 @@ export default function ReportingPage() {
         setTrainingReport(null);
       }
 
-      // Load market deep dive for the selected month
+      // Load market deep dive for selected month + previous month (MoM in UI / GDPR report)
       try {
-        // Try to load saved data first
-        let savedDeepDive = await getMarketDeepDive(selectedMonth).catch(() => null);
-        
-        // If Firestore fails, try localStorage
-        if (!savedDeepDive) {
-          try {
-            const localData = localStorage.getItem(`marketDeepDive_${selectedMonth}`);
-            if (localData) {
-              const parsed = JSON.parse(localData);
-              savedDeepDive = {
-                id: selectedMonth,
-                month: selectedMonth,
-                markets: parsed.markets,
-                significantIncidents: parsed.significantIncidents || [],
-                summaryAndOutlook: parsed.summaryAndOutlook || '',
-                createdAt: new Date(),
-                updatedAt: new Date(),
-                createdBy: parsed.createdBy,
-              };
-            }
-          } catch (localError) {
-            console.warn('Could not load from localStorage:', localError);
-          }
-        }
-        
-        // Aggregate numbers on-the-fly (with timeout)
-        console.log('Aggregating market deep dive data...');
-        const aggregatedDeepDive = await Promise.race([
-          aggregateMarketDeepDive(selectedMonth),
-          new Promise<MarketDeepDive>((_, reject) => 
-            setTimeout(() => reject(new Error('Aggregation timeout')), 10000)
-          )
-        ]).catch(err => {
-          console.warn('Failed to aggregate market deep dive:', err);
-          // Return empty structure
-          return {
-            id: selectedMonth,
-            month: selectedMonth,
-            markets: {
-              DACH: { deletionRequests: 0, dsarRequests: 0, escalations: 0, statusText: '' },
-              Nordics: { deletionRequests: 0, dsarRequests: 0, escalations: 0, statusText: '' },
-              BNL: { deletionRequests: 0, dsarRequests: 0, escalations: 0, statusText: '' },
-              Fr: { deletionRequests: 0, dsarRequests: 0, escalations: 0, statusText: '' },
-            },
-            significantIncidents: [],
-            summaryAndOutlook: '',
-            createdAt: new Date(),
-            updatedAt: new Date(),
-          };
-        });
-        
-        // Merge: Use aggregated numbers but keep saved texts and deletionsHC
-        if (savedDeepDive) {
-          aggregatedDeepDive.markets.DACH.statusText = savedDeepDive.markets.DACH?.statusText || '';
-          aggregatedDeepDive.markets.DACH.deletionsHC = savedDeepDive.markets.DACH?.deletionsHC;
-          aggregatedDeepDive.markets.Nordics.statusText = savedDeepDive.markets.Nordics?.statusText || '';
-          aggregatedDeepDive.markets.Nordics.deletionsHC = savedDeepDive.markets.Nordics?.deletionsHC;
-          aggregatedDeepDive.markets.BNL.statusText = savedDeepDive.markets.BNL?.statusText || '';
-          aggregatedDeepDive.markets.BNL.deletionsHC = savedDeepDive.markets.BNL?.deletionsHC;
-          aggregatedDeepDive.markets.Fr.statusText = savedDeepDive.markets.Fr?.statusText || '';
-          aggregatedDeepDive.markets.Fr.deletionsHC = savedDeepDive.markets.Fr?.deletionsHC;
-          aggregatedDeepDive.significantIncidents = savedDeepDive.significantIncidents || [];
-          aggregatedDeepDive.summaryAndOutlook = savedDeepDive.summaryAndOutlook || '';
-          aggregatedDeepDive.attributions = savedDeepDive.attributions || [];
-          aggregatedDeepDive.highlightsOverride = savedDeepDive.highlightsOverride || '';
-          aggregatedDeepDive.lowlightsOverride = savedDeepDive.lowlightsOverride || '';
-        }
-        
-        setMarketDeepDive(aggregatedDeepDive);
+        const prevMonthKey = getPreviousMonth(selectedMonth);
+        console.log('Aggregating market deep dive data (current + previous month)...');
+        const [currentDive, prevDive] = await Promise.all([
+          buildMergedMarketDeepDive(selectedMonth),
+          buildMergedMarketDeepDive(prevMonthKey),
+        ]);
+        setMarketDeepDive(currentDive);
+        setPreviousMonthDeepDive(prevDive);
         console.log('Market deep dive loaded successfully');
       } catch (error) {
         console.warn('Market Deep Dive not available:', error);
         setMarketDeepDive(null);
+        setPreviousMonthDeepDive(null);
       }
     } catch (error) {
       console.error('Error loading reporting data:', error);
@@ -217,7 +126,7 @@ export default function ReportingPage() {
   async function copyActivityLog(activities: ActivityLogEntry[]) {
     const text = generateActivityLogText(activities);
     await navigator.clipboard.writeText(text);
-    alert('✅ Activity Log copied to clipboard!');
+    showToast('Activity log copied to clipboard.');
   }
 
   function formatMonthKey(date: Date): string {
@@ -239,32 +148,34 @@ export default function ReportingPage() {
     return `${nextYear}-${String(nextMonth).padStart(2, '0')}`;
   }
 
-  function formatMonthDisplay(monthKey: string): string {
-    const [year, month] = monthKey.split('-');
-    const date = new Date(parseInt(year), parseInt(month) - 1);
-    return date.toLocaleDateString('en-US', { month: 'long', year: 'numeric' });
-  }
+  async function copyGdprReport() {
+    const htmlSummary = generateMonthlySummaryHTML(
+      monthlySummary,
+      previousMonthlySummary,
+      highlights,
+      selectedMonth,
+      filteredReports,
+      filteredActivityLog,
+      trainingReport,
+      marketDeepDive,
+      previousMonthDeepDive
+    );
 
-  async function copyMonthlySummary() {
-    const htmlSummary = generateMonthlySummaryHTML(monthlySummary, previousMonthlySummary, highlights, selectedMonth, filteredReports, filteredActivityLog, trainingReport, marketDeepDive);
-    
-    // Create a temporary element to copy HTML
     const blob = new Blob([htmlSummary], { type: 'text/html' });
     const data = [new ClipboardItem({ 'text/html': blob })];
-    
+
     try {
       await navigator.clipboard.write(data);
-      alert('✅ Full Monthly Report copied! Paste directly into your email.');
+      showToast('GDPR report copied. Paste directly into your email.');
     } catch (err) {
-      // Fallback: copy as text
       await navigator.clipboard.writeText(htmlSummary);
-      alert('✅ HTML copied as text! Paste into your email (HTML mode).');
+      showToast('HTML copied as plain text. Paste into your email (HTML mode).', 'info');
     }
   }
 
   async function copyMBRReport() {
     if (!marketDeepDive) {
-      alert('⚠️ No Market Deep Dive data available for this month.');
+      showToast('No Market Deep Dive data available for this month.', 'warning');
       return;
     }
     
@@ -276,11 +187,11 @@ export default function ReportingPage() {
     
     try {
       await navigator.clipboard.write(data);
-      alert('✅ MBR Report copied! Paste directly into your email.');
+      showToast('MBR report copied. Paste directly into your email.');
     } catch (err) {
       // Fallback: copy as text
       await navigator.clipboard.writeText(htmlReport);
-      alert('✅ MBR Report copied as text! Paste into your email (HTML mode).');
+      showToast('MBR report copied as plain text. Paste into your email (HTML mode).', 'info');
     }
   }
 
@@ -312,13 +223,42 @@ export default function ReportingPage() {
         <div>
           <h1 className="text-3xl font-bold text-gray-900">Reporting</h1>
           <p className="text-gray-600 mt-1">European GDPR Dashboard</p>
+          <nav className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-sm text-gray-600">
+            <Link href="/reporting/view" className="text-blue-600 hover:underline">
+              Online view
+            </Link>
+            <span className="text-gray-300" aria-hidden>
+              |
+            </span>
+            <Link href="/reporting/upload" className="text-blue-600 hover:underline">
+              Upload / import
+            </Link>
+            <span className="text-gray-300" aria-hidden>
+              |
+            </span>
+            <Link href="/reporting/overrides" className="text-blue-600 hover:underline">
+              Overrides (GDPR & MBR)
+            </Link>
+            <span className="text-gray-300" aria-hidden>
+              |
+            </span>
+            <Link href="/reporting/submit" className="text-blue-600 hover:underline">
+              Submit weekly data
+            </Link>
+          </nav>
         </div>
         <div className="flex gap-3">
           <Link
-            href="/admin/reporting/upload"
+            href="/reporting/submit"
+            className="bg-emerald-600 text-white px-6 py-3 rounded-lg font-medium hover:bg-emerald-700 transition"
+          >
+            ✏️ Submit weekly data
+          </Link>
+          <Link
+            href="/reporting/upload"
             className="bg-blue-600 text-white px-6 py-3 rounded-lg font-medium hover:bg-blue-700 transition"
           >
-            📊 Upload Weekly Report
+            📊 Upload CSV
           </Link>
           <Link
             href="/admin/training-cases/upload"
@@ -402,14 +342,14 @@ export default function ReportingPage() {
         <div className="bg-white border border-gray-200 rounded-lg p-4 mb-6 flex items-center justify-between">
           <div>
             <h2 className="text-lg font-bold text-gray-900">📊 {formatMonthDisplay(selectedMonth)} Report</h2>
-            <p className="text-sm text-gray-600">Export or copy your monthly compliance summary</p>
+            <p className="text-sm text-gray-600">Export or copy your GDPR report for email</p>
           </div>
           <div className="flex gap-2">
             <button
-              onClick={copyMonthlySummary}
+              onClick={copyGdprReport}
               className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition text-sm font-medium"
             >
-              Copy Monthly Summary
+              Copy GDPR Report
             </button>
             <button
               onClick={copyMBRReport}
@@ -441,7 +381,7 @@ export default function ReportingPage() {
               Summary & Outlook
             </h2>
             <Link
-              href="/admin/market-deep-dive"
+              href="/reporting/overrides"
               className="text-blue-600 hover:text-blue-700 text-sm font-medium"
             >
               Edit →
@@ -457,7 +397,7 @@ export default function ReportingPage() {
           <div className="flex items-center justify-between mb-4">
             <h2 className="text-lg font-bold text-gray-900">⚠️ GDPR Related Incidents & Compliance Risks</h2>
             <Link
-              href="/admin/market-deep-dive"
+              href="/reporting/overrides"
               className="text-blue-600 hover:text-blue-700 text-sm font-medium"
             >
               Edit →
@@ -480,7 +420,7 @@ export default function ReportingPage() {
           <div className="flex items-center justify-between mb-4">
             <h2 className="text-lg font-bold text-gray-900">🌍 Market Snapshot</h2>
             <Link
-              href="/admin/market-deep-dive"
+              href="/reporting/overrides"
               className="text-blue-600 hover:text-blue-700 text-sm font-medium"
             >
               Edit →
@@ -492,29 +432,62 @@ export default function ReportingPage() {
                 <tr className="border-b-2 border-gray-300">
                   <th className="text-left py-3 px-3 text-sm font-semibold text-gray-700">Market</th>
                   <th className="text-center py-3 px-3 text-sm font-semibold text-gray-700">Deletions</th>
-                  <th className="text-center py-3 px-3 text-sm font-semibold text-gray-700">Deletions HC</th>
-                  <th className="text-center py-3 px-3 text-sm font-semibold text-gray-700">DSAR</th>
-                  <th className="text-center py-3 px-3 text-sm font-semibold text-gray-700">Legal Escalations</th>
+                  <th className="text-center py-3 px-3 text-sm font-semibold text-gray-700">Access requests</th>
+                  <th className="text-center py-3 px-3 text-sm font-semibold text-gray-700">Legal escalations</th>
                   <th className="text-center py-3 px-3 text-sm font-semibold text-gray-700">Status</th>
                 </tr>
               </thead>
               <tbody>
                 {['DACH', 'Fr', 'BNL', 'Nordics'].map(market => {
                   const data = marketDeepDive.markets[market as keyof typeof marketDeepDive.markets];
+                  const prevData = previousMonthDeepDive?.markets?.[market as keyof typeof marketDeepDive.markets];
                   const marketStatus = getMarketStatusData(filteredReports).find(m => {
                     if (market === 'Fr') return m.market === 'France';
                     if (market === 'BNL') return m.market === 'NL' || m.market === 'Be / Lux';
                     return m.market === market;
                   });
                   const statusEmoji = marketStatus?.status === 'green' ? '🟢' : marketStatus?.status === 'yellow' ? '🟡' : marketStatus?.status === 'red' ? '🔴' : '-';
-                  
+
+                  const del = data?.deletionRequests || 0;
+                  const delP = prevData?.deletionRequests || 0;
+                  const acc = data?.dsarRequests || 0;
+                  const accP = prevData?.dsarRequests || 0;
+                  const esc = data?.escalations || 0;
+                  const escP = prevData?.escalations || 0;
+
+                  const momClass = (cur: number, prev: number) => {
+                    const d = cur - prev;
+                    if (d > 0) return 'text-red-600';
+                    if (d < 0) return 'text-green-600';
+                    return 'text-gray-400';
+                  };
+                  const momText = (cur: number, prev: number) => {
+                    const d = cur - prev;
+                    if (previousMonthDeepDive == null) return '';
+                    return `Δ ${d > 0 ? '+' : ''}${d}`;
+                  };
+
                   return (
                     <tr key={market} className="border-b border-gray-200 hover:bg-gray-50">
                       <td className="py-3 px-3 font-semibold text-gray-900">{market === 'Fr' ? 'France' : market}</td>
-                      <td className="py-3 px-3 text-center font-mono text-sm">{data?.deletionRequests || 0}</td>
-                      <td className="py-3 px-3 text-center font-mono text-sm">{data?.deletionsHC || '-'}</td>
-                      <td className="py-3 px-3 text-center font-mono text-sm">{data?.dsarRequests || 0}</td>
-                      <td className="py-3 px-3 text-center font-mono text-sm">{data?.escalations || 0}</td>
+                      <td className="py-3 px-3 text-center text-sm">
+                        <div className="font-mono font-medium">{del}</div>
+                        {previousMonthDeepDive && (
+                          <div className={`text-xs font-semibold ${momClass(del, delP)}`}>{momText(del, delP)}</div>
+                        )}
+                      </td>
+                      <td className="py-3 px-3 text-center text-sm">
+                        <div className="font-mono font-medium">{acc}</div>
+                        {previousMonthDeepDive && (
+                          <div className={`text-xs font-semibold ${momClass(acc, accP)}`}>{momText(acc, accP)}</div>
+                        )}
+                      </td>
+                      <td className="py-3 px-3 text-center text-sm">
+                        <div className="font-mono font-medium">{esc}</div>
+                        {previousMonthDeepDive && (
+                          <div className={`text-xs font-semibold ${momClass(esc, escP)}`}>{momText(esc, escP)}</div>
+                        )}
+                      </td>
                       <td className="py-3 px-3 text-center text-xl">{statusEmoji}</td>
                     </tr>
                   );
@@ -1014,75 +987,6 @@ function HighlightsCard({ title, items, type }: { title: string; items: string[]
 
 // Helper Functions
 
-function getMarketBreakdown(reports: WeeklyReport[]) {
-  const markets = ['DACH', 'France', 'Nordics', 'NL', 'Be / Lux'];
-  
-  return markets.map(market => {
-    const marketReports = reports.filter(r => r.market === market);
-    
-    // Get latest report for status
-    const latestReport = marketReports.length > 0 
-      ? marketReports.reduce((latest, r) => r.weekOf > latest.weekOf ? r : latest)
-      : null;
-    
-    return {
-      market,
-      deletion: marketReports.reduce((sum, r) => sum + r.deletionRequests, 0),
-      portability: marketReports.reduce((sum, r) => sum + r.portabilityRequests, 0),
-      legalSupport: marketReports.reduce((sum, r) => sum + r.legalEscalations + r.regulatorInquiries + r.privacyIncidents, 0),
-      status: latestReport?.riskStatus || 'green',
-    };
-  });
-}
-
-function calculateMonthlySummary(reports: WeeklyReport[], month: string) {
-  const totalDeletionRequests = reports.reduce((sum, r) => sum + r.deletionRequests, 0);
-  const totalPortabilityRequests = reports.reduce((sum, r) => sum + r.portabilityRequests, 0);
-  const totalRequests = totalDeletionRequests + totalPortabilityRequests;
-  const totalEscalations = reports.reduce((sum, r) => sum + r.legalEscalations + r.regulatorInquiries + r.privacyIncidents, 0);
-  const marketsAtRisk = new Set(reports.filter(r => r.riskStatus === 'yellow' || r.riskStatus === 'red').map(r => r.market)).size;
-  const avgBacklog = reports.length > 0 ? reports.reduce((sum, r) => sum + r.currentBacklog, 0) / reports.length : 0;
-  
-  return { totalRequests, totalDeletionRequests, totalPortabilityRequests, totalEscalations, marketsAtRisk, avgBacklog };
-}
-
-function getMarketStatusData(reports: WeeklyReport[]) {
-  // Get latest report per market
-  const marketMap = new Map<string, WeeklyReport>();
-  
-  reports.forEach(report => {
-    const existing = marketMap.get(report.market);
-    if (!existing || report.weekOf > existing.weekOf) {
-      marketMap.set(report.market, report);
-    }
-  });
-
-  return Array.from(marketMap.values()).map(r => ({
-    market: r.market,
-    status: r.riskStatus,
-    reason: r.riskExplanation || (r.riskStatus === 'green' ? 'All systems operational' : 'No explanation provided'),
-  }));
-}
-
-function getGreenMarkets(reports: WeeklyReport[]) {
-  // Get latest report per market
-  const marketMap = new Map<string, WeeklyReport>();
-  
-  reports.forEach(report => {
-    const existing = marketMap.get(report.market);
-    if (!existing || report.weekOf > existing.weekOf) {
-      marketMap.set(report.market, report);
-    }
-  });
-
-  return Array.from(marketMap.values())
-    .filter(r => r.riskStatus === 'green')
-    .map(r => ({
-      market: r.market,
-      requests: r.deletionRequests + r.portabilityRequests,
-    }));
-}
-
 function prepareMarketTrendData(reports: WeeklyReport[], market: string) {
   const marketReports = reports
     .filter(r => r.market === market)
@@ -1098,44 +1002,6 @@ function prepareMarketTrendData(reports: WeeklyReport[], market: string) {
 function formatDateShort(date: Date): string {
   const d = new Date(date);
   return `${d.getMonth() + 1}/${d.getDate()}`;
-}
-
-function calculateMonthlySummary_OLD(reports: WeeklyReport[], month: string) {
-  const totalRequests = reports.reduce((sum, r) => sum + r.deletionRequests + r.portabilityRequests, 0);
-  const totalEscalations = reports.reduce((sum, r) => sum + r.legalEscalations + r.regulatorInquiries + r.privacyIncidents, 0);
-  const marketsAtRisk = new Set(reports.filter(r => r.riskStatus === 'yellow' || r.riskStatus === 'red').map(r => r.market)).size;
-  const avgBacklog = reports.length > 0 ? reports.reduce((sum, r) => sum + r.currentBacklog, 0) / reports.length : 0;
-  
-  return { totalRequests, totalEscalations, marketsAtRisk, avgBacklog };
-}
-
-function extractHighlights(reports: WeeklyReport[], activityLog: ActivityLogEntry[]) {
-  const negative: string[] = [];
-  const positive: string[] = [];
-  
-  // From reports
-  reports.forEach(r => {
-    if (r.riskStatus === 'red') {
-      negative.push(`${r.market}: Red status${r.escalationDetails ? ` - ${r.escalationDetails}` : ''}`);
-    }
-    if (r.legalEscalations > 0) {
-      negative.push(`${r.market}: ${r.legalEscalations} legal escalation(s)`);
-    }
-    if (r.riskStatus === 'green' && r.deletionRequests + r.portabilityRequests > 0) {
-      positive.push(`${r.market}: All green, ${r.deletionRequests + r.portabilityRequests} requests handled`);
-    }
-  });
-  
-  // From activity log
-  activityLog.forEach(a => {
-    if (a.category === 'Escalation') {
-      negative.push(`${a.market}: ${a.details}`);
-    } else if (a.details.startsWith('✅')) {
-      positive.push(`${a.market}: ${a.details.replace('✅ ', '')}`);
-    }
-  });
-  
-  return { negative: negative.slice(0, 5), positive: positive.slice(0, 5) };
 }
 
 function prepareTrendsData(reports: WeeklyReport[], currentMonth: string) {
@@ -1285,373 +1151,6 @@ function generateMonthlySummaryText(current: any, previous: any, highlights: any
   return text;
 }
 
-function generateMonthlySummaryHTML(current: any, previous: any, highlights: any, selectedMonth: string, reports: WeeklyReport[], activityLog: ActivityLogEntry[], trainingReport: TrainingReport | null, marketDeepDive: MarketDeepDive | null): string {
-  const monthName = formatMonthDisplay(selectedMonth);
-  const breakdown = getMarketBreakdown(reports);
-  
-  // Get market status for traffic lights
-  const marketStatusData = getMarketStatusData(reports);
-  
-  // Calculate metrics for Executive Summary Box
-  const totalDeletions = marketDeepDive ? Object.values(marketDeepDive.markets).reduce((sum, m) => sum + (m?.deletionRequests || 0) + (m?.deletionsHC || 0), 0) : current.totalDeletionRequests;
-  const totalDSAR = marketDeepDive ? Object.values(marketDeepDive.markets).reduce((sum, m) => sum + (m?.dsarRequests || 0), 0) : current.totalPortabilityRequests;
-  const totalLegalEscalations = marketDeepDive ? Object.values(marketDeepDive.markets).reduce((sum, m) => sum + (m?.escalations || 0), 0) : current.totalEscalations;
-  const criticalIncidentsCount = marketDeepDive?.significantIncidents?.length || 0;
-  
-  // Market Deep Dive rows (if available) - ordered by importance: DACH, France, BNL, Nordics
-  const marketOrder = ['DACH', 'Fr', 'BNL', 'Nordics'] as const;
-  const deepDiveMarketRows = marketDeepDive ? marketOrder.map(market => {
-    const data = marketDeepDive.markets[market as keyof typeof marketDeepDive.markets];
-    if (!data) return '';
-    
-    // Find status from reporting data
-    const marketStatus = marketStatusData.find(m => {
-      if (market === 'Fr') return m.market === 'France';
-      if (market === 'BNL') return m.market === 'NL' || m.market === 'Be / Lux';
-      return m.market === market;
-    });
-    
-    const statusEmoji = marketStatus?.status === 'green' ? '🟢' : marketStatus?.status === 'yellow' ? '🟡' : marketStatus?.status === 'red' ? '🔴' : '-';
-    
-    return `
-      <tr>
-        <td style="padding: 10px 12px;"><strong>${market === 'Fr' ? 'France' : market}</strong></td>
-        <td style="text-align: center; padding: 10px 12px;">${data.deletionRequests}</td>
-        <td style="text-align: center; padding: 10px 12px;">${data.deletionsHC || '-'}</td>
-        <td style="text-align: center; padding: 10px 12px;">${data.dsarRequests}</td>
-        <td style="text-align: center; padding: 10px 12px;">${data.escalations || 0}</td>
-        <td style="text-align: center; padding: 10px 12px; font-size: 18px;">${statusEmoji}</td>
-      </tr>`;
-  }).join('') : '';
-  
-  return `
-<!DOCTYPE html>
-<html>
-<head>
-  <meta charset="UTF-8">
-  <style>
-    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Arial, sans-serif; line-height: 1.6; color: #1f2937; margin: 0; padding: 0; background: #f9fafb; }
-    .container { max-width: 800px; margin: 0 auto; background: white; }
-    .header { background: #7FB838; color: white; padding: 24px 30px; }
-    .header h1 { margin: 0; font-size: 20px; font-weight: 600; }
-    .header p { margin: 5px 0 0 0; opacity: 0.95; font-size: 12px; }
-    .executive-summary { background: #f5f5f5; padding: 20px 30px; margin: 20px 30px; border-radius: 8px; text-align: center; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
-    .executive-summary h2 { margin: 0 0 15px 0; font-size: 16px; color: #111827; font-weight: 600; }
-    .summary-metrics { display: grid; grid-template-columns: repeat(4, 1fr); gap: 15px; margin-top: 15px; }
-    .summary-metric { text-align: center; }
-    .summary-metric .value { font-size: 28px; font-weight: 700; color: #111827; display: block; margin-bottom: 4px; }
-    .summary-metric .label { font-size: 11px; color: #6b7280; text-transform: uppercase; letter-spacing: 0.5px; }
-    .section { background: #ffffff; padding: 20px 30px; border-bottom: 1px solid #e5e7eb; }
-    .section h2 { margin: 0 0 10px 0; font-size: 15px; color: #111827; font-weight: 600; }
-    .section h3 { margin: 12px 0 6px 0; font-size: 14px; color: #374151; font-weight: 600; }
-    .section p { margin: 0; color: #4b5563; font-size: 13px; line-height: 1.6; }
-    table { width: 100%; border-collapse: collapse; margin: 10px 0; background: white; border: 1px solid #e5e7eb; box-shadow: 0 1px 2px rgba(0,0,0,0.05); }
-    th { background: #f9fafb; padding: 10px 12px; text-align: left; font-size: 11px; font-weight: 700; color: #374151; border-bottom: 2px solid #e5e7eb; text-transform: uppercase; letter-spacing: 0.5px; }
-    td { padding: 10px 12px; border-bottom: 1px solid #f3f4f6; font-size: 13px; color: #374151; }
-    tr:hover { background: #f9fafb; transition: background 0.15s; }
-    .info-box { background: #f9fafb; border-left: 3px solid #d1d5db; padding: 10px 14px; margin: 8px 0; border-radius: 2px; }
-    .incident-box { background: #fef2f2; border-left: 4px solid #ef4444; padding: 15px; margin: 8px 0; border-radius: 2px; line-height: 1.6; box-shadow: 0 1px 2px rgba(0,0,0,0.05); }
-    .incident-title { font-weight: 600; font-size: 13px; color: #111827; margin: 0 0 4px 0; }
-    .incident-list { margin: 4px 0; padding-left: 18px; font-size: 12px; color: #4b5563; }
-    .incident-list li { margin: 3px 0; }
-    ul { margin: 6px 0; padding-left: 18px; }
-    li { margin: 5px 0; color: #4b5563; font-size: 12px; line-height: 1.5; }
-    .market-tag { display: inline-block; background: #e5e7eb; color: #374151; padding: 2px 6px; border-radius: 3px; font-size: 11px; font-weight: 600; margin-right: 4px; }
-    .footer { background: #f9fafb; padding: 16px 30px; text-align: center; color: #6b7280; font-size: 11px; border-top: 1px solid #e5e7eb; }
-    .footer a { color: #7FB838; text-decoration: none; font-weight: 500; }
-    .footer a:hover { text-decoration: underline; }
-    .training-footnote { font-size: 0.9em; color: #666; font-style: italic; margin-top: 10px; padding-top: 10px; border-top: 1px solid #e5e7eb; }
-  </style>
-</head>
-<body>
-  <div class="container">
-    <div class="header">
-      <h1>GDPR Monthly Report - ${monthName}</h1>
-      <p>GDPR Compliance Summary for HelloFresh DACH, France, BNL and Nordics</p>
-    </div>
-
-    <!-- Executive Summary Box -->
-    <div class="executive-summary">
-      <h2>📊 ${monthName} Summary</h2>
-      <div class="summary-metrics">
-        <div class="summary-metric">
-          <span class="value">${totalDeletions}</span>
-          <span class="label">Deletions</span>
-        </div>
-        <div class="summary-metric">
-          <span class="value">${totalDSAR}</span>
-          <span class="label">DSAR Requests</span>
-        </div>
-        <div class="summary-metric">
-          <span class="value">${totalLegalEscalations}</span>
-          <span class="label">Legal Escalations</span>
-        </div>
-        <div class="summary-metric">
-          <span class="value">${criticalIncidentsCount}</span>
-          <span class="label">Incidents</span>
-        </div>
-      </div>
-    </div>
-
-    ${marketDeepDive && marketDeepDive.summaryAndOutlook ? `
-    <div class="section">
-      <h2>Summary & Outlook</h2>
-      <p style="line-height: 1.6;">${marketDeepDive.summaryAndOutlook.replace(/\n/g, '<br>')}</p>
-    </div>
-    ` : ''}
-
-    ${marketDeepDive && marketDeepDive.significantIncidents && marketDeepDive.significantIncidents.length > 0 ? `
-    <div class="section">
-      <h2>GDPR Related Incidents & Compliance Risks</h2>
-      ${marketDeepDive.significantIncidents.map((inc, idx) => `
-        <div class="incident-box">
-          <div class="incident-title">Incident ${String.fromCharCode(65 + idx)}: ${inc.title}</div>
-          <ul class="incident-list">
-            <li><strong>What happened:</strong> ${inc.description.split('Compliance Risk:')[0].replace('What happened:', '').trim()}</li>
-            ${inc.description.includes('Compliance Risk:') ? `<li><strong>Compliance Risk:</strong> ${inc.description.split('Compliance Risk:')[1].split('Status/Impact:')[0].trim()}</li>` : ''}
-            ${inc.description.includes('Status/Impact:') ? `<li><strong>Status/Impact:</strong> ${inc.description.split('Status/Impact:')[1].trim()}</li>` : ''}
-          </ul>
-        </div>
-      `).join('')}
-    </div>
-    ` : ''}
-
-    ${marketDeepDive ? `
-    <div class="section">
-      <h2>Market Snapshot</h2>
-      <table>
-        <thead>
-          <tr>
-            <th style="font-weight: 700;">Market</th>
-            <th style="text-align: center; font-weight: 700;">Deletions</th>
-            <th style="text-align: center; font-weight: 700;">Deletions HC</th>
-            <th style="text-align: center; font-weight: 700;">DSAR</th>
-            <th style="text-align: center; font-weight: 700;">Legal Escalations</th>
-            <th style="text-align: center; font-weight: 700;">Status</th>
-          </tr>
-        </thead>
-        <tbody>
-          ${deepDiveMarketRows}
-        </tbody>
-      </table>
-    </div>
-    ` : ''}
-
-    <div class="section">
-      <h2>Highlights</h2>
-      ${marketDeepDive && marketDeepDive.highlightsOverride ? 
-        `<p style="line-height: 1.6; white-space: pre-wrap;">${marketDeepDive.highlightsOverride}</p>` : 
-        generateHighlightsHTML(activityLog)
-      }
-    </div>
-
-    <div class="section">
-      <h2>Lowlights & Attention Areas</h2>
-      ${marketDeepDive && marketDeepDive.lowlightsOverride ? 
-        `<p style="line-height: 1.6; white-space: pre-wrap;">${marketDeepDive.lowlightsOverride}</p>` : 
-        generateLowlightsHTML_Improved(reports, activityLog)
-      }
-    </div>
-
-    ${trainingReport && trainingReport.totalCases > 0 ? `
-    <div class="section">
-      <h2>Agent Training Snapshot</h2>
-      ${generateTrainingHTML(trainingReport)}
-      <div class="training-footnote">*Currently showing data for DACH market only. Additional markets will be included in future reports as training data becomes available.</div>
-    </div>
-    ` : ''}
-
-    <div class="footer">
-      <p>Report generated on ${new Date().toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' })} | <a href="https://gdpr-assistant.hellofresh.com/reporting/view" target="_blank">View Online</a></p>
-      <p style="margin: 6px 0 0 0;"><strong>HelloFresh GDPR Team</strong></p>
-      ${marketDeepDive && marketDeepDive.attributions && marketDeepDive.attributions.length > 0 ? `
-      <p style="margin: 8px 0 0 0;">Thank you for your contributions: ${marketDeepDive.attributions.sort().map(email => `<strong>${email}</strong>`).join(', ')}.</p>
-      ` : ''}
-    </div>
-  </div>
-</body>
-</html>
-  `.trim();
-}
-
-function generateHighlightsHTML(activityLog: ActivityLogEntry[]): string {
-  const wins = activityLog.filter(a => a.category === 'Initiative' && a.details.startsWith('✅'));
-  const initiatives = activityLog.filter(a => a.category === 'Initiative' && !a.details.startsWith('✅'));
-  
-  let html = '';
-  
-  if (wins.length > 0) {
-    html += '<div class="info-box">';
-    html += '<h3 style="margin: 0 0 6px 0; font-size: 13px; font-weight: 600;">Wins & Achievements</h3>';
-    html += '<ul style="margin: 4px 0;">';
-    wins.forEach(w => {
-      const dateStr = w.weekOf ? new Date(w.weekOf).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) : '';
-      html += `<li><span class="market-tag">${w.market}</span>${w.details.replace('✅ ', '')} <span style="color: #9ca3af; font-size: 11px;">(${dateStr})</span></li>`;
-    });
-    html += '</ul>';
-    html += '</div>';
-  }
-  
-  if (initiatives.length > 0) {
-    html += '<div class="info-box">';
-    html += '<h3 style="margin: 0 0 6px 0; font-size: 13px; font-weight: 600;">Current Initiatives</h3>';
-    html += '<ul style="margin: 4px 0;">';
-    initiatives.forEach(i => {
-      html += `<li><span class="market-tag">${i.market}</span>${i.details}</li>`;
-    });
-    html += '</ul>';
-    html += '</div>';
-  }
-  
-  if (wins.length === 0 && initiatives.length === 0) {
-    html += '<p style="color: #9ca3af; font-style: italic; font-size: 12px;">No major wins or initiatives reported this month.</p>';
-  }
-  
-  return html;
-}
-
-function generateLowlightsHTML(reports: WeeklyReport[], activityLog: ActivityLogEntry[]): string {
-  const atRiskMarkets = getMarketStatusData(reports).filter(m => m.status === 'yellow' || m.status === 'red');
-  const escalations = activityLog.filter(a => a.category === 'Escalation');
-  
-  let html = '';
-  
-  if (atRiskMarkets.length > 0) {
-    html += '<div class="info-box">';
-    html += '<h3 style="margin: 0 0 6px 0; font-size: 13px; font-weight: 600;">Markets Requiring Attention</h3>';
-    html += '<ul style="margin: 4px 0;">';
-    atRiskMarkets.forEach(m => {
-      const emoji = m.status === 'red' ? '🔴' : '🟡';
-      html += `<li>${emoji} <span class="market-tag">${m.market}</span>${m.reason}</li>`;
-    });
-    html += '</ul>';
-    html += '</div>';
-  }
-  
-  if (escalations.length > 0) {
-    html += '<div class="info-box">';
-    html += '<h3 style="margin: 0 0 6px 0; font-size: 13px; font-weight: 600;">Noteworthy Complaints & Issues</h3>';
-    
-    // Group escalations by market
-    const escalationsByMarket = escalations.reduce((acc, e) => {
-      if (!acc[e.market]) acc[e.market] = [];
-      acc[e.market].push(e);
-      return acc;
-    }, {} as Record<string, ActivityLogEntry[]>);
-    
-    // Display grouped by market
-    Object.entries(escalationsByMarket).forEach(([market, entries]) => {
-      html += `<div style="margin: 8px 0;"><strong style="color: #374151; font-size: 12px;">${market}:</strong><ul style="margin: 2px 0; padding-left: 20px;">`;
-      entries.forEach(e => {
-        html += `<li>${e.details}</li>`;
-      });
-      html += '</ul></div>';
-    });
-    html += '</div>';
-  }
-  
-  if (atRiskMarkets.length === 0 && escalations.length === 0) {
-    html += '<p style="color: #9ca3af; font-style: italic; font-size: 12px;">All markets green - no major issues to report.</p>';
-  }
-  
-  return html;
-}
-
-// Improved version with better spacing and market-based structure
-function generateLowlightsHTML_Improved(reports: WeeklyReport[], activityLog: ActivityLogEntry[]): string {
-  const atRiskMarkets = getMarketStatusData(reports).filter(m => m.status === 'yellow' || m.status === 'red');
-  const escalations = activityLog.filter(a => a.category === 'Escalation');
-  
-  let html = '';
-  
-  if (atRiskMarkets.length > 0) {
-    html += '<div class="info-box">';
-    html += '<h3 style="margin: 0 0 10px 0; font-size: 13px; font-weight: 600;">Markets Requiring Attention</h3>';
-    html += '<ul style="margin: 4px 0; line-height: 1.6;">';
-    atRiskMarkets.forEach(m => {
-      const emoji = m.status === 'red' ? '🔴' : '🟡';
-      html += `<li style="margin: 6px 0;">${emoji} <span class="market-tag">${m.market}</span>${m.reason}</li>`;
-    });
-    html += '</ul>';
-    html += '</div>';
-  }
-  
-  if (escalations.length > 0) {
-    html += '<div class="info-box" style="margin-top: 12px;">';
-    html += '<h3 style="margin: 0 0 10px 0; font-size: 13px; font-weight: 600;">Noteworthy Complaints & Issues</h3>';
-    
-    // Group escalations by market
-    const escalationsByMarket = escalations.reduce((acc, e) => {
-      if (!acc[e.market]) acc[e.market] = [];
-      acc[e.market].push(e);
-      return acc;
-    }, {} as Record<string, ActivityLogEntry[]>);
-    
-    // Display grouped by market with better structure
-    Object.entries(escalationsByMarket).forEach(([market, entries], idx) => {
-      html += `<div style="margin: ${idx > 0 ? '15px' : '0'} 0;">`;
-      html += `<h4 style="margin: 0 0 6px 0; font-size: 12px; font-weight: 700; color: #111827;">${market}</h4>`;
-      html += '<ul style="margin: 0; padding-left: 20px; line-height: 1.6;">';
-      entries.forEach(e => {
-        const dateStr = e.weekOf ? new Date(e.weekOf).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) : '';
-        html += `<li style="margin: 5px 0; color: #4b5563;">${e.details} <span style="color: #9ca3af; font-size: 11px;">(${dateStr})</span></li>`;
-      });
-      html += '</ul></div>';
-    });
-    html += '</div>';
-  }
-  
-  if (atRiskMarkets.length === 0 && escalations.length === 0) {
-    html += '<p style="color: #10b981; font-weight: 600; font-size: 13px;">🎉 All markets green - no major issues to report!</p>';
-  }
-  
-  return html;
-}
-
-function generateTrainingHTML(trainingReport: TrainingReport): string {
-  let html = '<p style="margin: 0 0 15px 0; color: #666; font-size: 14px;">Common 1st Line Agent errors identified this month requiring training intervention.</p>';
-  
-  // Group by market
-  const marketGroups = new Map<string, typeof trainingReport.topErrors>();
-  trainingReport.topErrors.forEach(error => {
-    if (!marketGroups.has(error.market)) {
-      marketGroups.set(error.market, []);
-    }
-    marketGroups.get(error.market)!.push(error);
-  });
-
-  marketGroups.forEach((errors, market) => {
-    html += `<div style="margin-bottom: 15px;">`;
-    html += `<h3 style="margin: 0 0 10px 0; font-size: 16px;"><span class="market-tag">${market}</span> Top Errors (${errors.reduce((sum, e) => sum + e.count, 0)} cases)</h3>`;
-    html += '<table style="width: 100%; border-collapse: collapse; font-size: 13px;">';
-    html += '<thead><tr style="border-bottom: 2px solid #ddd;">';
-    html += '<th style="text-align: left; padding: 8px;">Error Type</th>';
-    html += '<th style="text-align: right; padding: 8px;">Count</th>';
-    html += '<th style="text-align: center; padding: 8px;">Trend</th>';
-    html += '</tr></thead><tbody>';
-    
-    errors.slice(0, 5).forEach(error => {
-      const trendIcon = error.trend === 'up' ? '📈' : error.trend === 'down' ? '📉' : '➡️';
-      const trendColor = error.trend === 'up' ? '#DC2626' : error.trend === 'down' ? '#059669' : '#6B7280';
-      const englishDescription = translateErrorDescription(error.errorDescription);
-      html += '<tr style="border-bottom: 1px solid #eee;">';
-      html += `<td style="padding: 8px; color: #333;">${englishDescription}</td>`;
-      html += `<td style="padding: 8px; text-align: right; font-weight: bold;">${error.count}</td>`;
-      html += `<td style="padding: 8px; text-align: center; color: ${trendColor};">${trendIcon}</td>`;
-      html += '</tr>';
-    });
-    
-    html += '</tbody></table>';
-    html += '</div>';
-  });
-
-  if (marketGroups.size === 0) {
-    html += '<p style="color: #888; font-style: italic;">No training cases reported this month.</p>';
-  }
-
-  return html;
-}
-
 function generateMarketDeepDiveHTML(marketDeepDive: MarketDeepDive): string {
   let html = '';
   
@@ -1792,131 +1291,6 @@ function generateMBRReportHTML(month: string, markets: Record<string, MarketData
 </body>
 </html>
   `.trim();
-}
-
-// Helper function to aggregate Market Deep Dive data on-the-fly
-async function aggregateMarketDeepDive(month: string): Promise<MarketDeepDive> {
-  const [year, monthNum] = month.split('-').map(Number);
-  const startDate = new Date(year, monthNum - 1, 1);
-  const endDate = new Date(year, monthNum, 0, 23, 59, 59);
-  
-  const result: Record<string, MarketData> = {
-    DACH: { deletionRequests: 0, dsarRequests: 0, escalations: 0, statusText: '' },
-    Nordics: { deletionRequests: 0, dsarRequests: 0, escalations: 0, statusText: '' },
-    BNL: { deletionRequests: 0, dsarRequests: 0, escalations: 0, statusText: '' },
-    Fr: { deletionRequests: 0, dsarRequests: 0, escalations: 0, statusText: '' },
-  };
-  
-  try {
-    const [allCases, categories, weeklyReports, activityLog] = await Promise.all([
-      getAllCases().catch(() => []),
-      getCategories().catch(() => []),
-      getWeeklyReports().catch(() => []),
-      getActivityLog().catch(() => []),
-    ]);
-    
-    // Filter for the month
-    const monthCases = allCases.filter(c => {
-      try {
-        const caseDate = c.createdAt instanceof Date ? c.createdAt : new Date(c.createdAt);
-        return caseDate >= startDate && caseDate <= endDate;
-      } catch {
-        return false;
-      }
-    });
-    
-    const monthReports = weeklyReports.filter(r => {
-      try {
-        const reportDate = r.weekOf instanceof Date ? r.weekOf : new Date(r.weekOf);
-        return reportDate >= startDate && reportDate <= endDate;
-      } catch {
-        return false;
-      }
-    });
-    
-    const monthEscalations = activityLog.filter(a => {
-      try {
-        const logDate = a.weekOf instanceof Date ? a.weekOf : new Date(a.weekOf);
-        return a.category === 'Escalation' && logDate >= startDate && logDate <= endDate;
-      } catch {
-        return false;
-      }
-    });
-    
-    // Find categories
-    const deletionCategory = categories.find(c => c.nameEn?.toLowerCase().includes('deletion'));
-    const dsarCategory = categories.find(c => 
-      c.nameEn?.toLowerCase().includes('access') || 
-      c.nameEn?.toLowerCase().includes('portability') ||
-      c.nameEn?.toLowerCase().includes('dsar')
-    );
-    
-    // Market mapping
-    const mapMarket = (market: string): string | null => {
-      if (!market) return null;
-      const upper = market.toUpperCase();
-      if (['DE', 'AT', 'CH', 'DACH'].includes(upper)) return 'DACH';
-      if (['SE', 'NO', 'DK', 'FI', 'NORDICS'].includes(upper)) return 'Nordics';
-      if (['NL', 'BE', 'LU', 'BNL'].includes(upper)) return 'BNL';
-      if (['FR', 'FRANCE'].includes(upper)) return 'Fr';
-      if (market === 'Be / Lux') return 'BNL';
-      if (market === 'France') return 'Fr';
-      return null;
-    };
-    
-    // Count from cases
-    monthCases.forEach(caseItem => {
-      const marketGroup = mapMarket(caseItem.market);
-      if (!marketGroup) return;
-      
-      if (deletionCategory && caseItem.primaryCategory === deletionCategory.id) {
-        result[marketGroup].deletionRequests++;
-      }
-      if (dsarCategory && caseItem.primaryCategory === dsarCategory.id) {
-        result[marketGroup].dsarRequests++;
-      }
-    });
-    
-    // Count from weekly reports
-    monthReports.forEach(report => {
-      const marketGroup = mapMarket(report.market);
-      if (!marketGroup) return;
-      
-      result[marketGroup].deletionRequests += (report.deletionRequests || 0);
-      result[marketGroup].dsarRequests += (report.portabilityRequests || 0);
-    });
-    
-    // Count escalations
-    monthEscalations.forEach(escalation => {
-      const marketGroup = mapMarket(escalation.market);
-      if (!marketGroup) return;
-      
-      result[marketGroup].escalations++;
-    });
-  } catch (error) {
-    console.error('Error aggregating market deep dive:', error);
-  }
-  
-  return {
-    id: month,
-    month,
-    markets: {
-      DACH: result.DACH,
-      Nordics: result.Nordics,
-      BNL: result.BNL,
-      Fr: result.Fr,
-    },
-    significantIncidents: [],
-    summaryAndOutlook: '',
-    createdAt: new Date(),
-    updatedAt: new Date(),
-  };
-}
-
-function formatMonthDisplay(monthKey: string): string {
-  const [year, month] = monthKey.split('-');
-  const date = new Date(parseInt(year), parseInt(month) - 1);
-  return date.toLocaleDateString('en-US', { month: 'long', year: 'numeric' });
 }
 
 function generateCSV(reports: WeeklyReport[]): string {

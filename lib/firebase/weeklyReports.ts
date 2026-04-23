@@ -224,7 +224,10 @@ async function deleteActivityLogForReport(market: string, weekOf: Date): Promise
  * Upsert a weekly report (create if new, update if exists)
  * Also creates/updates activity log entries from text fields
  */
-async function upsertWeeklyReport(reportData: Omit<WeeklyReport, 'id' | 'createdAt' | 'updatedAt'>): Promise<{ created: boolean; id: string }> {
+/** Create or replace the report for this market + week (same ID as CSV import); refreshes activity log from text fields. */
+export async function upsertWeeklyReport(
+  reportData: Omit<WeeklyReport, 'id' | 'createdAt' | 'updatedAt'>
+): Promise<{ created: boolean; id: string }> {
   try {
     const db = getFirestore();
     const reportId = generateReportId(reportData.market, reportData.weekOf);

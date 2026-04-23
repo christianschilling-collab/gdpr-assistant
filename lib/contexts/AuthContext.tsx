@@ -12,6 +12,9 @@ interface AuthContextType {
   isAdmin: boolean;
   loading: boolean;
   isAuthenticated: boolean;
+  /** Shown after Google login if the account is not in Firestore `users` (production). */
+  accessNotice: string | null;
+  clearAccessNotice: () => void;
   refreshUserProfile: () => Promise<void>;
 }
 
@@ -22,6 +25,8 @@ const AuthContext = createContext<AuthContextType>({
   isAdmin: false,
   loading: true,
   isAuthenticated: false,
+  accessNotice: null,
+  clearAccessNotice: () => {},
   refreshUserProfile: async () => {},
 });
 
@@ -29,6 +34,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
   const [userProfile, setUserProfile] = useState<UserProfile | null>(null);
   const [loading, setLoading] = useState(true);
+  const [accessNotice, setAccessNotice] = useState<string | null>(null);
+
+  const clearAccessNotice = () => setAccessNotice(null);
 
   async function loadUserProfile(firebaseUser: User) {
     try {
@@ -58,7 +66,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         if (profile) {
           // User exists in database
           console.log('✅ User profile loaded:', profile);
-          
+          setAccessNotice(null);
+
           // Update last login time
           const { updateDoc, doc, Timestamp } = await import('firebase/firestore');
           const { getDb } = await import('@/lib/firebase/config');
@@ -68,14 +77,16 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
               lastLoginAt: Timestamp.now(),
             });
           }
-          
+
           setUserProfile(profile);
         } else {
-          // User NOT in database - deny access
+          // User NOT in database - deny access (production: no auto-provision)
           console.warn('⚠️ User not authorized:', firebaseUser.email);
+          setAccessNotice(
+            'Dieses Google-Konto ist noch nicht freigeschaltet: In Firestore fehlt ein Eintrag in der Collection „users“ mit deiner E-Mail als Dokument-ID. Bitte einen Admin oder die Person, die Firebase pflegt – danach erneut anmelden.'
+          );
           setUserProfile(null);
-          
-          // Sign out unauthorized user
+
           const { signOutUser } = await import('@/lib/firebase/auth');
           await signOutUser();
         }
@@ -142,6 +153,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         isAdmin: userProfile?.role === 'admin' && userProfile?.isActive,
         loading,
         isAuthenticated: !!user && userProfile?.isActive !== false,
+        accessNotice,
+        clearAccessNotice,
         refreshUserProfile,
       }}
     >

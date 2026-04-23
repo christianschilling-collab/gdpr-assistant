@@ -14,13 +14,14 @@ const PUBLIC_ROUTES = [
   '/onboarding/recommendations',      // Recommendations
 ];
 
-// Routes that require admin access
-const ADMIN_ROUTES = [
-  '/admin',
-  '/templates',
-  '/analytics',
-  '/reporting',
-];
+// Routes that require admin access (submit weekly data is only auth, not admin)
+const ADMIN_ROUTE_PREFIXES = ['/admin', '/templates', '/analytics', '/reporting'];
+
+function pathnameRequiresAdmin(pathname: string | null | undefined): boolean {
+  if (!pathname) return false;
+  if (pathname.startsWith('/reporting/submit')) return false;
+  return ADMIN_ROUTE_PREFIXES.some(prefix => pathname.startsWith(prefix));
+}
 
 // DEVELOPMENT MODE: Bypass auth for specific routes (REMOVE IN PRODUCTION!)
 const DEV_BYPASS_ROUTES = [
@@ -75,7 +76,7 @@ export function AuthGuard({ children }: { children: React.ReactNode }) {
     }
 
     // Check admin routes
-    const isAdminRoute = ADMIN_ROUTES.some(route => pathname?.startsWith(route));
+    const isAdminRoute = pathnameRequiresAdmin(pathname);
     if (isAdminRoute && !hasAdminAccess) {
       console.log('❌ AuthGuard: Not admin, redirecting to /cases');
       console.log('   - isAdmin:', isAdmin);
@@ -115,7 +116,7 @@ export function AuthGuard({ children }: { children: React.ReactNode }) {
       return null;
     }
 
-    const isAdminRoute = ADMIN_ROUTES.some(route => pathname?.startsWith(route));
+    const isAdminRoute = pathnameRequiresAdmin(pathname);
     if (isAdminRoute && !hasAdminAccess) {
       return null;
     }

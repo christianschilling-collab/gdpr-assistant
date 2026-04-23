@@ -6,6 +6,20 @@ const nextConfig = {
     unoptimized: true,
   },
   trailingSlash: true,
+  async redirects() {
+    return [
+      {
+        source: '/admin/reporting/upload',
+        destination: '/reporting/upload',
+        permanent: true,
+      },
+      {
+        source: '/admin/market-deep-dive',
+        destination: '/reporting/overrides',
+        permanent: true,
+      },
+    ];
+  },
   typescript: {
     ignoreBuildErrors: true,
   },

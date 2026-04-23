@@ -7,7 +7,7 @@ import { LoginButton } from '@/components/LoginButton';
 
 export default function Home() {
   const router = useRouter();
-  const { user, loading } = useAuth();
+  const { user, loading, accessNotice } = useAuth();
 
   useEffect(() => {
     if (loading) return;
@@ -31,6 +31,11 @@ export default function Home() {
         <p className="text-gray-600 text-center max-w-md">
           Sign in with your Google account to open the board.
         </p>
+        {accessNotice ? (
+          <p className="text-sm text-amber-900 bg-amber-50 border border-amber-200 rounded-lg px-4 py-3 max-w-lg text-center">
+            {accessNotice}
+          </p>
+        ) : null}
         <LoginButton />
       </div>
     );
