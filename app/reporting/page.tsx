@@ -42,8 +42,9 @@ import {
   REPORT_MARKETS,
   buildYearChartRows,
   reportMatchesChartMarket,
-  reportsInCalendarYear,
+  reportsInReportingYear,
 } from '@/lib/reporting/yearAggregates';
+import { formatReportingMonthKeyFromWeekOf, reportingYearFromWeekOf } from '@/lib/reporting/weekReporting';
 
 export default function ReportingPage() {
   const { showToast } = useToast();
@@ -115,7 +116,7 @@ export default function ReportingPage() {
   };
 
   const reportsYearAll = useMemo(
-    () => reportsInCalendarYear(reports, selectedYear),
+    () => reportsInReportingYear(reports, selectedYear),
     [reports, selectedYear]
   );
 
@@ -141,7 +142,7 @@ export default function ReportingPage() {
 
   const activityInYear = useMemo(() => {
     return activityLog.filter(e => {
-      if (new Date(e.weekOf).getFullYear() !== selectedYear) return false;
+      if (reportingYearFromWeekOf(new Date(e.weekOf)) !== selectedYear) return false;
       if (eventMarket !== 'all') {
         if (eventMarket === 'BNL') {
           if (e.market !== 'NL' && e.market !== 'Be / Lux') return false;
@@ -163,7 +164,7 @@ export default function ReportingPage() {
   }, [activityInYear, eventSortDesc]);
 
   const prevYearReports = useMemo(
-    () => reportsInCalendarYear(reports, selectedYear - 1),
+    () => reportsInReportingYear(reports, selectedYear - 1),
     [reports, selectedYear]
   );
   const prevChartRows = useMemo(
@@ -259,9 +260,10 @@ export default function ReportingPage() {
   const monthlyDelSpark = useMemo(() => {
     const sums = Array.from({ length: 12 }, () => 0);
     reportsYearAll.forEach(r => {
-      const d = new Date(r.weekOf);
-      if (d.getFullYear() !== selectedYear) return;
-      sums[d.getMonth()] += r.deletionRequests;
+      const mk = formatReportingMonthKeyFromWeekOf(new Date(r.weekOf));
+      if (!mk.startsWith(`${selectedYear}-`)) return;
+      const monthIndex = parseInt(mk.slice(5, 7), 10) - 1;
+      sums[monthIndex] += r.deletionRequests;
     });
     return sums;
   }, [reportsYearAll, selectedYear]);
@@ -274,9 +276,10 @@ export default function ReportingPage() {
   const monthlyPortSpark = useMemo(() => {
     const sums = Array.from({ length: 12 }, () => 0);
     reportsYearAll.forEach(r => {
-      const d = new Date(r.weekOf);
-      if (d.getFullYear() !== selectedYear) return;
-      sums[d.getMonth()] += r.portabilityRequests;
+      const mk = formatReportingMonthKeyFromWeekOf(new Date(r.weekOf));
+      if (!mk.startsWith(`${selectedYear}-`)) return;
+      const monthIndex = parseInt(mk.slice(5, 7), 10) - 1;
+      sums[monthIndex] += r.portabilityRequests;
     });
     return sums;
   }, [reportsYearAll, selectedYear]);
@@ -288,9 +291,10 @@ export default function ReportingPage() {
   const monthlyLegalSpark = useMemo(() => {
     const sums = Array.from({ length: 12 }, () => 0);
     reportsYearAll.forEach(r => {
-      const d = new Date(r.weekOf);
-      if (d.getFullYear() !== selectedYear) return;
-      sums[d.getMonth()] +=
+      const mk = formatReportingMonthKeyFromWeekOf(new Date(r.weekOf));
+      if (!mk.startsWith(`${selectedYear}-`)) return;
+      const monthIndex = parseInt(mk.slice(5, 7), 10) - 1;
+      sums[monthIndex] +=
         r.legalEscalations + r.regulatorInquiries + r.privacyIncidents;
     });
     return sums;
@@ -307,8 +311,7 @@ export default function ReportingPage() {
   }
 
   function formatMonthKey(date: Date): string {
-    const d = new Date(date);
-    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+    return formatReportingMonthKeyFromWeekOf(date);
   }
 
   function getPreviousMonth(monthKey: string): string {

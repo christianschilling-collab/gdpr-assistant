@@ -1,7 +1,8 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useState } from 'react';
 import Link from 'next/link';
+import { useRouter } from 'next/navigation';
 import { upsertWeeklyReport } from '@/lib/firebase/weeklyReports';
 import type { WeeklyReport, WeeklyReportActivityItem } from '@/lib/types';
 import { ACTIVITY_LOG_KINDS, ACTIVITY_KIND_LABELS } from '@/lib/types';
@@ -12,29 +13,24 @@ import {
   normalizeWeeklyReportOptionalText,
   parseWeeklyReportCount,
 } from '@/lib/reporting/weekReportNormalize';
+import {
+  formatReportingMonthKeyFromWeekOf,
+  getNthCompletedWeekMonday,
+  getSundayEndOfWeekStartingMonday,
+} from '@/lib/reporting/weekReporting';
 
 const MARKETS: WeeklyReport['market'][] = ['DACH', 'NL', 'France', 'Be / Lux', 'Nordics'];
-
-function defaultWeekOfIso(): string {
-  const d = new Date();
-  const day = d.getDay();
-  const diff = day === 0 ? -6 : 1 - day;
-  d.setDate(d.getDate() + diff);
-  d.setHours(12, 0, 0, 0);
-  return d.toISOString().slice(0, 10);
-}
-
-function parseWeekOfFromInput(isoDate: string): Date {
-  const [y, m, day] = isoDate.split('-').map(Number);
-  return new Date(y, m - 1, day, 12, 0, 0, 0);
-}
+/** How far back the submit form allows (1 = last completed week). */
+const MAX_COMPLETED_WEEKS_BACK = 8;
 
 export default function WeeklyReportSubmitPage() {
+  const router = useRouter();
   const { user, loading: authLoading, isAuthenticated } = useAuth();
   const { showToast } = useToast();
 
   const [market, setMarket] = useState<WeeklyReport['market']>('DACH');
-  const [weekOfIso, setWeekOfIso] = useState(defaultWeekOfIso);
+  /** 1 = last completed Mon–Sun, 2 = week before that, … */
+  const [completedWeeksBack, setCompletedWeeksBack] = useState(1);
   const [yourName, setYourName] = useState('');
 
   const [deletionRequests, setDeletionRequests] = useState(0);
@@ -62,7 +58,9 @@ export default function WeeklyReportSubmitPage() {
     setYourName(prev => (prev.trim() ? prev : fromProfile || fromEmail || ''));
   }, [user]);
 
-  const weekOfDate = useMemo(() => parseWeekOfFromInput(weekOfIso), [weekOfIso]);
+  const reportingWeekMonday = getNthCompletedWeekMonday(new Date(), completedWeeksBack);
+  const weekSunday = getSundayEndOfWeekStartingMonday(reportingWeekMonday);
+  const reportingMonthKey = formatReportingMonthKeyFromWeekOf(reportingWeekMonday);
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -76,15 +74,26 @@ export default function WeeklyReportSubmitPage() {
       return;
     }
 
+    if (
+      !Number.isInteger(completedWeeksBack) ||
+      completedWeeksBack < 1 ||
+      completedWeeksBack > MAX_COMPLETED_WEEKS_BACK
+    ) {
+      showToast('Invalid week selection.', 'warning');
+      return;
+    }
+
     setSubmitting(true);
     try {
       const filledItems = activityItems.filter(
         row => row.title.trim() || row.description.trim()
       );
 
+      const weekOf = getNthCompletedWeekMonday(new Date(), completedWeeksBack);
+
       const payload: Omit<WeeklyReport, 'id' | 'createdAt' | 'updatedAt'> = {
         market,
-        weekOf: weekOfDate,
+        weekOf,
         yourName: normalizeWeeklyReportOptionalText(yourName) ?? '',
         deletionRequests,
         portabilityRequests,
@@ -105,6 +114,7 @@ export default function WeeklyReportSubmitPage() {
         created ? 'Weekly report saved (new entry).' : 'Weekly report updated (same market & week).',
         'success'
       );
+      router.push('/reporting');
     } catch (err: unknown) {
       console.error(err);
       const msg = err instanceof Error ? err.message : 'Could not save report.';
@@ -151,8 +161,9 @@ export default function WeeklyReportSubmitPage() {
         </p>
         <h1 className="text-2xl font-bold text-gray-900 mt-2">Submit weekly market report</h1>
         <p className="text-gray-600 mt-2 text-sm leading-relaxed">
-          Use the same <strong>week-of</strong> date as in the Google Sheet (usually the Monday of that week). Submitting again
-          for the same market and week <strong>updates</strong> the existing row and refreshes linked activity highlights.
+          Choose a <strong>completed</strong> Monday–Sunday block (default: last week). Use an older week only for late or
+          corrected submissions. Saving again for the same market and week <strong>updates</strong> the row and refreshes
+          linked activity highlights.
         </p>
         <p className="text-gray-500 mt-2 text-xs leading-relaxed">
           Request volumes and risk feed the dashboard. Use <strong>activity rows</strong> below for structured notes (type,
@@ -179,14 +190,61 @@ export default function WeeklyReportSubmitPage() {
               </select>
             </div>
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">Week of (date)</label>
-              <input
-                type="date"
-                required
-                value={weekOfIso}
-                onChange={e => setWeekOfIso(e.target.value)}
+              <label className="block text-sm font-medium text-gray-700 mb-1">Which week?</label>
+              <select
+                value={completedWeeksBack}
+                onChange={e => setCompletedWeeksBack(Number(e.target.value))}
                 className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500"
-              />
+              >
+                {Array.from({ length: MAX_COMPLETED_WEEKS_BACK }, (_, i) => {
+                  const n = i + 1;
+                  const mon = getNthCompletedWeekMonday(new Date(), n);
+                  const sun = getSundayEndOfWeekStartingMonday(mon);
+                  const labelStart = mon.toLocaleDateString('en-GB', {
+                    weekday: 'short',
+                    day: 'numeric',
+                    month: 'short',
+                  });
+                  const labelEnd = sun.toLocaleDateString('en-GB', {
+                    weekday: 'short',
+                    day: 'numeric',
+                    month: 'short',
+                    year: 'numeric',
+                  });
+                  const prefix =
+                    n === 1 ? 'Last completed week' : n === 2 ? '2 weeks ago' : `${n} weeks ago`;
+                  return (
+                    <option key={n} value={n}>
+                      {prefix}: {labelStart} – {labelEnd}
+                    </option>
+                  );
+                })}
+              </select>
+              <p className="text-xs text-gray-500 mt-1">
+                Up to {MAX_COMPLETED_WEEKS_BACK} weeks back. Older data: use admin tools or Firestore if needed.
+              </p>
+            </div>
+            <div className="rounded-lg border border-emerald-200 bg-emerald-50/60 px-4 py-3 text-sm sm:col-span-2">
+              <p className="font-medium text-gray-900">Selected reporting week</p>
+              <p className="text-gray-800 mt-1">
+                {reportingWeekMonday.toLocaleDateString('en-GB', {
+                  weekday: 'long',
+                  day: 'numeric',
+                  month: 'long',
+                  year: 'numeric',
+                })}{' '}
+                –{' '}
+                {weekSunday.toLocaleDateString('en-GB', {
+                  weekday: 'long',
+                  day: 'numeric',
+                  month: 'long',
+                  year: 'numeric',
+                })}
+              </p>
+              <p className="text-xs text-gray-600 mt-2 leading-relaxed">
+                Dashboard charts and GDPR export use calendar month <strong>{reportingMonthKey}</strong> (month of{' '}
+                <strong>Thursday</strong> in this week), so cross-month weeks always land in one comparable bucket.
+              </p>
             </div>
             <div className="sm:col-span-2">
               <label className="block text-sm font-medium text-gray-700 mb-1">Your name (optional)</label>

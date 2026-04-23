@@ -67,18 +67,21 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           // User exists in database
           console.log('✅ User profile loaded:', profile);
           setAccessNotice(null);
-
-          // Update last login time
-          const { updateDoc, doc, Timestamp } = await import('firebase/firestore');
-          const { getDb } = await import('@/lib/firebase/config');
-          const db = getDb();
-          if (db) {
-            await updateDoc(doc(db, 'users', firebaseUser.email), {
-              lastLoginAt: Timestamp.now(),
-            });
-          }
-
           setUserProfile(profile);
+
+          // Best-effort last login (must not block or undo profile on failure)
+          try {
+            const { updateDoc, doc, Timestamp } = await import('firebase/firestore');
+            const { getDb } = await import('@/lib/firebase/config');
+            const db = getDb();
+            if (db) {
+              await updateDoc(doc(db, 'users', firebaseUser.email), {
+                lastLoginAt: Timestamp.now(),
+              });
+            }
+          } catch (e) {
+            console.warn('Could not update lastLoginAt (non-fatal):', e);
+          }
         } else {
           // User NOT in database - deny access (production: no auto-provision)
           console.warn('⚠️ User not authorized:', firebaseUser.email);
@@ -125,18 +128,38 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     let cancelled = false;
     let unsubscribe: (() => void) | undefined;
 
-    void consumeAuthRedirectResult().finally(() => {
-      if (cancelled) return;
-      unsubscribe = onAuthChange((firebaseUser) => {
-        setUser(firebaseUser);
-        if (firebaseUser) {
-          loadUserProfile(firebaseUser).finally(() => setLoading(false));
-        } else {
-          setUserProfile(null);
-          setLoading(false);
-        }
+    const PROFILE_LOAD_MS = 25_000;
+
+    void consumeAuthRedirectResult()
+      .catch(() => undefined)
+      .finally(() => {
+        if (cancelled) return;
+        unsubscribe = onAuthChange((firebaseUser) => {
+          setUser(firebaseUser);
+          if (firebaseUser) {
+            let finished = false;
+            const finish = () => {
+              if (cancelled || finished) return;
+              finished = true;
+              setLoading(false);
+            };
+            const timeoutId = window.setTimeout(() => {
+              console.warn('Auth: profile load exceeded timeout; releasing loading state.');
+              finish();
+            }, PROFILE_LOAD_MS);
+
+            void loadUserProfile(firebaseUser)
+              .catch((e) => console.error('loadUserProfile failed:', e))
+              .finally(() => {
+                window.clearTimeout(timeoutId);
+                finish();
+              });
+          } else {
+            setUserProfile(null);
+            setLoading(false);
+          }
+        });
       });
-    });
 
     return () => {
       cancelled = true;

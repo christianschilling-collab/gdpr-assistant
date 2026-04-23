@@ -118,9 +118,17 @@ export function Navigation() {
             <div className={`h-8 w-px ${isBoardPage ? 'bg-gray-700' : 'bg-gray-300'}`}></div>
             <Link 
               href="/"
-              className={`min-w-0 text-sm font-semibold ${textColor} ${textColorHover} transition-colors flex items-center gap-2 sm:whitespace-nowrap`}
+              className={`inline-flex min-w-0 max-w-full shrink-0 items-center gap-2 text-sm font-semibold ${textColor} ${textColorHover} transition-colors sm:whitespace-nowrap`}
             >
-              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" className="w-5 h-5 flex-shrink-0">
+              {/* width/height attributes: fallback if Tailwind fails so the shield never fills the viewport */}
+              <svg
+                xmlns="http://www.w3.org/2000/svg"
+                viewBox="0 0 100 100"
+                width={20}
+                height={20}
+                className="h-5 w-5 max-h-5 max-w-5 shrink-0"
+                aria-hidden
+              >
                 <path d="M50 2 L92 20 L92 48 Q92 75 50 98 Q8 75 8 48 L8 20 Z" fill="#91C11E"/>
                 <path d="M30 50 L43 65 L72 32" fill="none" stroke="white" strokeWidth="8" strokeLinecap="round" strokeLinejoin="round"/>
               </svg>

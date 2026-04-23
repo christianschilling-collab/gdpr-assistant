@@ -1,4 +1,5 @@
 import type { WeeklyReport } from '@/lib/types';
+import { formatReportingMonthKeyFromWeekOf, reportingYearFromWeekOf } from '@/lib/reporting/weekReporting';
 
 /** Display markets for charts and reporting (NL + Be / Lux = BNL). */
 export const REPORT_MARKETS = ['DACH', 'France', 'Nordics', 'BNL'] as const;
@@ -10,11 +11,6 @@ export const BNL_SOURCE_MARKETS = ['NL', 'Be / Lux'] as const;
 export function reportMatchesChartMarket(r: { market: string }, mk: ReportMarketKey): boolean {
   if (mk === 'BNL') return r.market === 'NL' || r.market === 'Be / Lux';
   return r.market === mk;
-}
-
-export function formatMonthKeyFromDate(date: Date): string {
-  const d = new Date(date);
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
 }
 
 export type MonthChartRow = {
@@ -31,7 +27,9 @@ export function buildYearChartRows(reports: WeeklyReport[], year: number): Month
     const row = { monthKey, label } as MonthChartRow;
     REPORT_MARKETS.forEach(mk => {
       const inMonth = reports.filter(
-        r => reportMatchesChartMarket(r, mk) && formatMonthKeyFromDate(r.weekOf) === monthKey
+        r =>
+          reportMatchesChartMarket(r, mk) &&
+          formatReportingMonthKeyFromWeekOf(new Date(r.weekOf)) === monthKey
       );
       row[mk] = inMonth.reduce((s, r) => s + r.deletionRequests + r.portabilityRequests, 0);
     });
@@ -40,6 +38,10 @@ export function buildYearChartRows(reports: WeeklyReport[], year: number): Month
   return rows;
 }
 
-export function reportsInCalendarYear(reports: WeeklyReport[], year: number): WeeklyReport[] {
-  return reports.filter(r => new Date(r.weekOf).getFullYear() === year);
+/** Weeks whose **reporting month** (month of Thursday) falls in `year`. */
+export function reportsInReportingYear(reports: WeeklyReport[], year: number): WeeklyReport[] {
+  return reports.filter(r => reportingYearFromWeekOf(new Date(r.weekOf)) === year);
 }
+
+/** @deprecated Use reportsInReportingYear — kept name for gradual migration if imported elsewhere. */
+export const reportsInCalendarYear = reportsInReportingYear;

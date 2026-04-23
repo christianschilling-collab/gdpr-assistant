@@ -312,7 +312,8 @@ export const HELP_CONTENT = {
           },
           {
             label: 'Submit weekly report',
-            description: 'Use Reporting → Submit weekly data to add or update a market/week (same data as the dashboard).',
+            description:
+              'Use Reporting → Submit weekly data for a completed Monday–Sunday week (default: last week; dropdown for up to 8 weeks back for late or corrected entries). Saving again updates the same market and week. Dashboard months use the week’s Thursday month for consistent buckets.',
           },
         ],
       },

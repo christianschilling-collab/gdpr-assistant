@@ -11,6 +11,7 @@ import { HelpButton } from '@/components/HelpModal';
 import { getAllCases } from '@/lib/firebase/cases';
 import { getWeeklyReports, getActivityLog } from '@/lib/firebase/weeklyReports';
 import { resolveActivityKind, isActivityLowlightKind } from '@/lib/reporting/activityLogKinds';
+import { formatReportingMonthKeyFromWeekOf } from '@/lib/reporting/weekReporting';
 import { getCategories } from '@/lib/firebase/categories';
 
 const MARKETS = ['DACH', 'Nordics', 'BNL', 'Fr'] as const;
@@ -222,11 +223,11 @@ export default function MarketDeepDivePage() {
         c.nameEn?.toLowerCase().includes('dsar')
       );
       
-      // Filter weekly reports for the month
+      // Filter weekly reports for the month (reporting month = month of week’s Thursday)
       const monthReports = weeklyReports.filter(r => {
         try {
-          const reportDate = r.weekOf instanceof Date ? r.weekOf : new Date(r.weekOf);
-          return reportDate >= startDate && reportDate <= endDate;
+          const w = r.weekOf instanceof Date ? r.weekOf : new Date(r.weekOf);
+          return formatReportingMonthKeyFromWeekOf(w) === month;
         } catch {
           return false;
         }
@@ -235,8 +236,10 @@ export default function MarketDeepDivePage() {
       // Filter escalations for the month
       const monthEscalations = activityLog.filter(a => {
         try {
-          const logDate = a.weekOf instanceof Date ? a.weekOf : new Date(a.weekOf);
-          return isActivityLowlightKind(resolveActivityKind(a)) && logDate >= startDate && logDate <= endDate;
+          const w = a.weekOf instanceof Date ? a.weekOf : new Date(a.weekOf);
+          return (
+            isActivityLowlightKind(resolveActivityKind(a)) && formatReportingMonthKeyFromWeekOf(w) === month
+          );
         } catch {
           return false;
         }

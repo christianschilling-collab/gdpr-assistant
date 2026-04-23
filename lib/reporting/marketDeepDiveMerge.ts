@@ -5,6 +5,7 @@ import { getAllCases } from '@/lib/firebase/cases';
 import { getCategories } from '@/lib/firebase/categories';
 import { getWeeklyReports, getActivityLog } from '@/lib/firebase/weeklyReports';
 import { resolveActivityKind, isActivityLowlightKind } from '@/lib/reporting/activityLogKinds';
+import { formatReportingMonthKeyFromWeekOf } from '@/lib/reporting/weekReporting';
 import type { MarketDeepDive, MarketData } from '@/lib/types/marketDeepDive';
 
 export async function aggregateMarketDeepDive(month: string): Promise<MarketDeepDive> {
@@ -38,8 +39,8 @@ export async function aggregateMarketDeepDive(month: string): Promise<MarketDeep
 
     const monthReports = weeklyReports.filter(r => {
       try {
-        const reportDate = r.weekOf instanceof Date ? r.weekOf : new Date(r.weekOf);
-        return reportDate >= startDate && reportDate <= endDate;
+        const w = r.weekOf instanceof Date ? r.weekOf : new Date(r.weekOf);
+        return formatReportingMonthKeyFromWeekOf(w) === month;
       } catch {
         return false;
       }
@@ -47,8 +48,10 @@ export async function aggregateMarketDeepDive(month: string): Promise<MarketDeep
 
     const monthEscalations = activityLog.filter(a => {
       try {
-        const logDate = a.weekOf instanceof Date ? a.weekOf : new Date(a.weekOf);
-        return isActivityLowlightKind(resolveActivityKind(a)) && logDate >= startDate && logDate <= endDate;
+        const w = a.weekOf instanceof Date ? a.weekOf : new Date(a.weekOf);
+        return (
+          isActivityLowlightKind(resolveActivityKind(a)) && formatReportingMonthKeyFromWeekOf(w) === month
+        );
       } catch {
         return false;
       }
