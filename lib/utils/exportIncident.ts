@@ -36,13 +36,27 @@ export function generateIncidentCSV(
   rows.push(['Incident ID', incident.incidentId]);
   rows.push(['Status', incident.status]);
   rows.push(['Risk Level', incident.riskAssessment || 'Not assessed']);
-  rows.push(['Breach Type', incident.primaryLegalRisk || 'Not specified']);
+  rows.push([
+    'Breach characterisation',
+    incident.breachTypes?.length
+      ? incident.breachTypes.join('; ')
+      : incident.primaryLegalRisk || 'Not specified',
+  ]);
   rows.push(['Nature', incident.natureOfIncident]);
+  if (incident.additionalDescription?.trim()) {
+    rows.push(['Additional intake notes', cleanText(incident.additionalDescription)]);
+  }
+  if (incident.breachOtherDetails?.trim()) {
+    rows.push(['Breach other details', cleanText(incident.breachOtherDetails)]);
+  }
   rows.push(['Affected Systems', incident.affectedSystems.join('; ')]);
+  if (incident.dataCategories?.length) {
+    rows.push(['Data categories', incident.dataCategories.join('; ')]);
+  }
   rows.push(['Discovery Date', formatDate(incident.discoveryDate)]);
   rows.push(['Impact Start', formatDate(incident.impactPeriod.start)]);
   rows.push(['Impact End', incident.impactPeriod.end ? formatDate(incident.impactPeriod.end) : 'Ongoing']);
-  rows.push(['Total Impacted', incident.totalImpacted.toString()]);
+  rows.push(['Total Impacted', (incident.totalImpacted ?? 0).toString()]);
   rows.push(['Notification Deadline', incident.notificationDeadline ? formatDate(incident.notificationDeadline) : 'N/A']);
   rows.push(['Created By', incident.createdBy]);
   rows.push(['Created At', formatDate(incident.createdAt)]);
@@ -243,25 +257,27 @@ export async function generateIncidentPDF(
       doc.text('Not assessed', margin + 25, yPos);
     }
     
-    // Breach Type - show primaryLegalRisk
+    // Breach characterisation — prefer multi-select from intake, else legacy field
     const breachTypeX = pageWidth / 2 + 10;
     doc.setTextColor(...darkGray);
     doc.setFontSize(11);
     doc.setFont('helvetica', 'normal');
-    doc.text(`Breach Type: `, breachTypeX, yPos);
-    
-    if (incident.primaryLegalRisk) {
-      const breachType = incident.primaryLegalRisk.replace('Loss of ', '');
-      const breachColor: [number, number, number] = 
-        incident.primaryLegalRisk === 'Loss of Confidentiality' ? [244, 67, 54] :
-        incident.primaryLegalRisk === 'Loss of Integrity' ? [255, 152, 0] : [255, 87, 34];
-      doc.setTextColor(...breachColor);
+    doc.text(`Breach: `, breachTypeX, yPos);
+
+    const breachLabel =
+      incident.breachTypes?.length
+        ? incident.breachTypes.map((b) => b.replace('Loss of ', '')).join(', ')
+        : incident.primaryLegalRisk || '';
+    if (breachLabel) {
+      doc.setTextColor(...darkGray);
       doc.setFont('helvetica', 'bold');
-      doc.text(breachType, breachTypeX + 30, yPos);
+      const truncated =
+        breachLabel.length > 42 ? `${breachLabel.slice(0, 40)}…` : breachLabel;
+      doc.text(truncated, breachTypeX + 22, yPos);
     } else {
       doc.setTextColor(...darkGray);
       doc.setFont('helvetica', 'normal');
-      doc.text('Unknown', breachTypeX + 30, yPos);
+      doc.text('Not specified', breachTypeX + 22, yPos);
     }
     
     yPos += 10;
@@ -281,11 +297,19 @@ export async function generateIncidentPDF(
     
     const summaryItems: Array<[string, string]> = [
       ['Nature of Incident', incident.natureOfIncident || 'Not specified'],
+    ];
+    if (incident.additionalDescription?.trim()) {
+      summaryItems.push(['Further details (intake)', incident.additionalDescription.trim()]);
+    }
+    if (incident.breachOtherDetails?.trim()) {
+      summaryItems.push(['Breach “other” details', incident.breachOtherDetails.trim()]);
+    }
+    summaryItems.push(
       ['Affected Systems', incident.affectedSystems?.length > 0 ? incident.affectedSystems.join(', ') : 'None specified'],
       ['Discovery Date', incident.discoveryDate?.toLocaleDateString() || 'Unknown'],
       ['Impact Period', `${incident.impactPeriod?.start?.toLocaleDateString() || 'Unknown'} - ${incident.impactPeriod?.end?.toLocaleDateString() || 'Ongoing'}`],
       ['Total Impacted', incident.totalImpacted?.toLocaleString() || '0'],
-    ];
+    );
     
     summaryItems.forEach(([label, value]) => {
       if (label && value) {

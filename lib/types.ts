@@ -485,10 +485,12 @@ export type IncidentStatus =
 
 export type RiskLevel = 'Critical' | 'High' | 'Medium' | 'Low';
 
-export type LegalRiskType = 
+export type LegalRiskType =
   | 'Loss of Availability'
   | 'Loss of Confidentiality'
-  | 'Loss of Integrity';
+  | 'Loss of Integrity'
+  /** Early reporting / mixed cases not captured by CIA alone (requires `breachOtherDetails` when used). */
+  | 'Other / not solely CIA';
 
 export type NotificationDecision = 
   | 'notify_authority'    // Must notify DPA
@@ -542,7 +544,9 @@ export interface Incident {
   incidentId: string;           // Human-readable ID: INC-2024-001
   
   // Section 1: Executive Summary
-  natureOfIncident: string;     // Brief description
+  natureOfIncident: string;     // Short summary / headline (intake)
+  /** Optional longer narrative at intake (before investigation). */
+  additionalDescription?: string;
   affectedSystems: string[];    // Multi-select: CRM, Payment, Email, etc.
   dataCategories: string[];     // Multi-select: Contact Data, Financial Data, etc.
   impactPeriod: {
@@ -551,9 +555,13 @@ export interface Incident {
   };
   discoveryDate: Date;
   rootCause?: string;           // Only visible in Investigation status
-  
+  /** Legacy / optional label from older Firestore payloads */
+  primaryLegalRisk?: string;
+
   // Section 2: Impact Analysis
   breachTypes?: LegalRiskType[];       // Multi-select: Loss of Availability, Confidentiality, Integrity
+  /** Free text when `Other / not solely CIA` is selected (intake or legal). */
+  breachOtherDetails?: string;
   classification?: string;
   countryImpact: CountryImpact[];  // BE, LU, NL, FR
   totalImpacted?: number;          // Calculated from countryImpact

@@ -47,9 +47,19 @@ export function BoardView({ items, onStatusChange }: BoardViewProps) {
     return 'new';
   }
 
+  function getIncidentArt33Deadline(incident: Incident): Date {
+    return (
+      incident.notificationDeadline ??
+      new Date(incident.discoveryDate.getTime() + 72 * 60 * 60 * 1000)
+    );
+  }
+
   function getItemDeadline(item: BoardItem): Date | null {
     if (item.type === 'escalation') {
       return item.data.deadlineFirstReply;
+    }
+    if (item.type === 'incident') {
+      return getIncidentArt33Deadline(item.data);
     }
     // Cases don't have explicit deadlines
     return null;
@@ -193,8 +203,33 @@ interface BoardCardProps {
   onDragStart: () => void;
 }
 
+function incidentMarketLabel(incident: Incident): string {
+  const codes = (incident.countryImpact || [])
+    .filter((c) => c.impactedVolume > 0 || c.complaintsReceived > 0)
+    .map((c) => c.country);
+  if (codes.length === 0) return '—';
+  if (codes.length <= 3) return codes.join(', ');
+  return `${codes.slice(0, 3).join(', ')} +${codes.length - 3}`;
+}
+
+function boardCardAssignee(item: BoardItem): string {
+  if (item.type === 'case') {
+    return item.data.teamMember || item.data.assignedTo || 'Unassigned';
+  }
+  if (item.type === 'incident') {
+    return item.data.assignedTo || item.data.createdBy || 'Unassigned';
+  }
+  return item.data.assignedTo || 'Unassigned';
+}
+
 function BoardCard({ item, onDragStart }: BoardCardProps) {
-  const deadline = item.type === 'escalation' ? item.data.deadlineFirstReply : null;
+  const deadline =
+    item.type === 'escalation'
+      ? item.data.deadlineFirstReply
+      : item.type === 'incident'
+        ? item.data.notificationDeadline ??
+          new Date(item.data.discoveryDate.getTime() + 72 * 60 * 60 * 1000)
+        : null;
   const urgency = deadline ? getUrgencyLevel(deadline) : 'normal';
   
   // Get item details
@@ -208,8 +243,11 @@ function BoardCard({ item, onDragStart }: BoardCardProps) {
     item.type === 'incident' ? item.data.natureOfIncident :
     item.data.summary;
   
-  const assignee = item.data.teamMember || 'Unassigned';
-  const market = item.data.market;
+  const assignee = boardCardAssignee(item);
+  const market =
+    item.type === 'case' || item.type === 'escalation'
+      ? item.data.market
+      : incidentMarketLabel(item.data);
   
   const category = 
     item.type === 'case' ? (item.data.primaryCategory || 'Uncategorized') :

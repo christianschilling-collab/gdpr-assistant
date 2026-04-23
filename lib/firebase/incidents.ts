@@ -79,7 +79,11 @@ function docToIncident(data: DocumentData): Incident {
     id: data.id,
     incidentId: data.incidentId,
     natureOfIncident: data.natureOfIncident,
+    additionalDescription: data.additionalDescription,
     affectedSystems: data.affectedSystems || [],
+    dataCategories: data.dataCategories || [],
+    breachTypes: data.breachTypes,
+    breachOtherDetails: data.breachOtherDetails,
     impactPeriod: {
       start: data.impactPeriod?.start?.toDate() || new Date(),
       end: data.impactPeriod?.end?.toDate(),
@@ -152,6 +156,8 @@ export async function createIncident(
     incidentId,
     totalImpacted,
     notificationDeadline,
+    /** Trackboard owner: always the reporter unless explicitly overridden (legacy). */
+    assignedTo: (incidentData.assignedTo?.trim() || incidentData.createdBy) as string,
     createdAt: now,
     updatedAt: now,
   };

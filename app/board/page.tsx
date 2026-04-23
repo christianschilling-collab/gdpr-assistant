@@ -177,16 +177,19 @@ export default function CommandCenterPage() {
         }),
         ...incidents.map((i) => {
           const { label, buckets } = incidentMarketBuckets(i);
+          const art33Deadline =
+            i.notificationDeadline ??
+            new Date(i.discoveryDate.getTime() + 72 * 60 * 60 * 1000);
           return {
             id: i.id,
             type: 'incident' as const,
             itemId: i.incidentId,
             category: 'Data Breach',
             subject: i.natureOfIncident,
-            owner: assigneeDir.toEmail((i.assignedTo || '').trim()),
+            owner: assigneeDir.toEmail((i.assignedTo || i.createdBy || '').trim()),
             marketLabel: label,
             marketBuckets: buckets,
-            deadline: new Date(i.discoveryDate.getTime() + 72 * 60 * 60 * 1000), // 72h from discovery
+            deadline: art33Deadline,
             source: 'Internal',
             status: i.status,
             createdAt: i.createdAt,
@@ -240,8 +243,12 @@ export default function CommandCenterPage() {
     if (hoursRemaining < 0 || hoursRemaining < 24) return 'critical';
     if (item.type === 'escalation') return 'escalated';
     
-    const totalHours = (item.deadline.getTime() - item.createdAt.getTime()) / (1000 * 60 * 60);
-    const elapsedPercent = ((totalHours - hoursRemaining) / totalHours) * 100;
+    const windowStart =
+      item.type === 'incident'
+        ? (item.raw as Incident).discoveryDate
+        : item.createdAt;
+    const totalHours = (item.deadline.getTime() - windowStart.getTime()) / (1000 * 60 * 60);
+    const elapsedPercent = totalHours > 0 ? ((totalHours - hoursRemaining) / totalHours) * 100 : 0;
     
     if (elapsedPercent > 50) return 'warning';
     return 'open';
@@ -614,8 +621,12 @@ const TrackboardRow = memo(function TrackboardRow({ item, urgency }: TrackboardR
   
   if (item.deadline) {
     const now = new Date();
-    const totalMs = item.deadline.getTime() - item.createdAt.getTime();
-    const elapsedMs = now.getTime() - item.createdAt.getTime();
+    const windowStart =
+      item.type === 'incident'
+        ? (item.raw as Incident).discoveryDate
+        : item.createdAt;
+    const totalMs = Math.max(item.deadline.getTime() - windowStart.getTime(), 1);
+    const elapsedMs = now.getTime() - windowStart.getTime();
     progressPercent = Math.min((elapsedMs / totalMs) * 100, 100);
     
     hoursOpen = Math.floor(elapsedMs / (1000 * 60 * 60));

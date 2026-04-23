@@ -1,13 +1,16 @@
 'use client';
 
-import { useState } from 'react';
+import { Fragment, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { createIncident, autoCalculateRisk } from '@/lib/firebase/incidents';
-import { Incident, CountryImpact, LegalRiskType, IncidentCountry, RiskLevel } from '@/lib/types';
+import { Incident, CountryImpact, LegalRiskType, IncidentCountry } from '@/lib/types';
 import { useToast } from '@/lib/contexts/ToastContext';
 import { useAuth } from '@/lib/contexts/AuthContext';
 import ErrorBoundary from '@/components/ErrorBoundary';
 import { ChartBarIcon, ExclamationTriangleIcon } from '@heroicons/react/24/outline';
+
+const NATURE_MAX = 2000;
+const ADDITIONAL_MAX = 12000;
 
 const AFFECTED_SYSTEMS = [
   'CRM',
@@ -18,7 +21,8 @@ const AFFECTED_SYSTEMS = [
   'Internal Tools',
   'Order Management',
   'Customer Database',
-];
+  'Other',
+] as const;
 
 const DATA_CATEGORIES = [
   'Contact Data (name, email, address, phone)',
@@ -28,7 +32,10 @@ const DATA_CATEGORIES = [
   'Order & Delivery Data',
   'Behavioral / Usage Data',
   'Special Category Data (Art. 9 GDPR)',
-];
+  'Other',
+] as const;
+
+const OTHER_CHOICE = 'Other';
 
 // Country groups for better UX
 const COUNTRY_GROUPS = {
@@ -61,6 +68,7 @@ export default function NewIncidentPage() {
   const { addToast } = useToast();
   const { user } = useAuth();
   const [saving, setSaving] = useState(false);
+  /** Two steps: initial report → impact (then create). Risk / legal assessment happens in the incident record. */
   const [currentStep, setCurrentStep] = useState(1);
   
   // Get user email for audit trail, fallback to 'system'
@@ -68,18 +76,16 @@ export default function NewIncidentPage() {
   
   // Form data
   const [natureOfIncident, setNatureOfIncident] = useState('');
+  const [additionalDescription, setAdditionalDescription] = useState('');
   const [affectedSystems, setAffectedSystems] = useState<string[]>([]);
+  const [otherSystemDetail, setOtherSystemDetail] = useState('');
   const [dataCategories, setDataCategories] = useState<string[]>([]);
+  const [otherDataCategoryDetail, setOtherDataCategoryDetail] = useState('');
   const [discoveryDate, setDiscoveryDate] = useState(new Date().toISOString().split('T')[0]);
   const [impactStart, setImpactStart] = useState(new Date().toISOString().split('T')[0]);
   const [impactEnd, setImpactEnd] = useState('');
   const [breachTypes, setBreachTypes] = useState<LegalRiskType[]>([]);
-  
-  // Risk Assessment fields (Step 3)
-  const [severity, setSeverity] = useState<'Low' | 'Medium' | 'High' | 'Critical' | ''>('');
-  const [dpaNotificationRequired, setDpaNotificationRequired] = useState<'Yes' | 'No' | ''>('');
-  const [dpaReferenceNumber, setDpaReferenceNumber] = useState('');
-  const [legalReasoningText, setLegalReasoningText] = useState('');
+  const [breachOtherDetails, setBreachOtherDetails] = useState('');
   
   // Country impact data - initialized with all regions
   const [countryImpact, setCountryImpact] = useState<CountryImpact[]>(
@@ -94,21 +100,35 @@ export default function NewIncidentPage() {
   const totalImpacted = countryImpact.reduce((sum, c) => sum + c.impactedVolume, 0);
 
   function toggleSystem(system: string) {
-    setAffectedSystems(prev =>
-      prev.includes(system) ? prev.filter(s => s !== system) : [...prev, system]
-    );
+    setAffectedSystems((prev) => {
+      const next = prev.includes(system) ? prev.filter((s) => s !== system) : [...prev, system];
+      if (system === OTHER_CHOICE && prev.includes(OTHER_CHOICE)) {
+        setOtherSystemDetail('');
+      }
+      return next;
+    });
   }
 
   function toggleDataCategory(category: string) {
-    setDataCategories(prev =>
-      prev.includes(category) ? prev.filter(c => c !== category) : [...prev, category]
-    );
+    setDataCategories((prev) => {
+      const next = prev.includes(category) ? prev.filter((c) => c !== category) : [...prev, category];
+      if (category === OTHER_CHOICE && prev.includes(OTHER_CHOICE)) {
+        setOtherDataCategoryDetail('');
+      }
+      return next;
+    });
   }
 
   function toggleBreachType(type: LegalRiskType) {
-    setBreachTypes(prev =>
-      prev.includes(type) ? prev.filter(t => t !== type) : [...prev, type]
-    );
+    setBreachTypes((prev) => {
+      if (prev.includes(type)) {
+        if (type === 'Other / not solely CIA') {
+          setBreachOtherDetails('');
+        }
+        return prev.filter((t) => t !== type);
+      }
+      return [...prev, type];
+    });
   }
 
   function updateCountryImpact(country: IncidentCountry, field: 'impactedVolume' | 'complaintsReceived', value: number) {
@@ -127,54 +147,81 @@ export default function NewIncidentPage() {
     );
   }
 
+  function buildAffectedSystemsForSave(): string[] {
+    const base = affectedSystems.filter((s) => s !== OTHER_CHOICE);
+    if (affectedSystems.includes(OTHER_CHOICE) && otherSystemDetail.trim()) {
+      base.push(`Other — ${otherSystemDetail.trim()}`);
+    }
+    return base;
+  }
+
+  function buildDataCategoriesForSave(): string[] {
+    const base = dataCategories.filter((c) => c !== OTHER_CHOICE);
+    if (dataCategories.includes(OTHER_CHOICE) && otherDataCategoryDetail.trim()) {
+      base.push(`Other — ${otherDataCategoryDetail.trim()}`);
+    }
+    return base;
+  }
+
   function canProceedToStep2(): boolean {
-    return (
+    const natureOk =
       natureOfIncident.trim().length > 0 &&
+      natureOfIncident.length <= NATURE_MAX &&
+      additionalDescription.length <= ADDITIONAL_MAX;
+    const systemsOk =
       affectedSystems.length > 0 &&
+      (!affectedSystems.includes(OTHER_CHOICE) || otherSystemDetail.trim().length >= 2);
+    const categoriesOk =
       dataCategories.length > 0 &&
+      (!dataCategories.includes(OTHER_CHOICE) || otherDataCategoryDetail.trim().length >= 2);
+    return (
+      natureOk &&
+      systemsOk &&
+      categoriesOk &&
       discoveryDate.length > 0 &&
       impactStart.length > 0
     );
   }
 
-  function canProceedToStep3(): boolean {
-    // At least one breach type must be selected
-    return breachTypes.length > 0;
-  }
-
-  function canProceedToStep4(): boolean {
-    // Risk Assessment validation
-    return (
-      severity !== '' &&
-      dpaNotificationRequired !== '' &&
-      legalReasoningText.trim().length > 0
-    );
+  function canSubmitImpactStep(): boolean {
+    if (!canProceedToStep2()) return false;
+    if (breachTypes.length === 0) return false;
+    if (breachTypes.includes('Other / not solely CIA')) {
+      return breachOtherDetails.trim().length >= 10;
+    }
+    return true;
   }
 
   async function handleSubmit() {
-    if (!canProceedToStep2() || !canProceedToStep3() || !canProceedToStep4()) {
-      addToast('Please fill in all required fields', 'error');
+    if (!canSubmitImpactStep()) {
+      addToast('Please complete all required fields (including breach details if “Other” is selected).', 'error');
       return;
     }
 
     setSaving(true);
     try {
+      const systemsSaved = buildAffectedSystemsForSave();
+      const categoriesSaved = buildDataCategoriesForSave();
+
       const incidentData: Omit<Incident, 'id' | 'incidentId' | 'createdAt' | 'updatedAt'> = {
-        natureOfIncident,
-        affectedSystems,
-        dataCategories,
+        natureOfIncident: natureOfIncident.trim(),
+        ...(additionalDescription.trim()
+          ? { additionalDescription: additionalDescription.trim() }
+          : {}),
+        affectedSystems: systemsSaved,
+        dataCategories: categoriesSaved,
         impactPeriod: {
           start: new Date(impactStart),
           end: impactEnd ? new Date(impactEnd) : undefined,
         },
         discoveryDate: new Date(discoveryDate),
-        breachTypes: breachTypes,
+        breachTypes,
+        ...(breachTypes.includes('Other / not solely CIA') && breachOtherDetails.trim()
+          ? { breachOtherDetails: breachOtherDetails.trim() }
+          : {}),
         countryImpact,
         status: 'Reporting',
         createdBy: userEmail,
-        // Risk Assessment fields
-        riskAssessment: severity as RiskLevel,
-        legalReasoning: legalReasoningText,
       };
 
       const id = await createIncident(incidentData);
@@ -215,7 +262,7 @@ export default function NewIncidentPage() {
             </button>
           </div>
 
-          {/* Progress Indicator */}
+          {/* Progress — risk & legal assessment happens after creation in the incident record */}
           <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6 mb-6">
             <div className="flex items-center justify-between mb-2">
               <span className={`text-sm font-medium ${currentStep >= 1 ? 'text-blue-600' : 'text-gray-400'}`}>
@@ -224,26 +271,18 @@ export default function NewIncidentPage() {
               <span className={`text-sm font-medium ${currentStep >= 2 ? 'text-blue-600' : 'text-gray-400'}`}>
                 Step 2
               </span>
-              <span className={`text-sm font-medium ${currentStep >= 3 ? 'text-blue-600' : 'text-gray-400'}`}>
-                Step 3
-              </span>
-              <span className={`text-sm font-medium ${currentStep >= 4 ? 'text-blue-600' : 'text-gray-400'}`}>
-                Step 4
-              </span>
             </div>
             <div className="relative">
               <div className="h-2 bg-gray-200 rounded-full">
                 <div
                   className="h-2 bg-blue-600 rounded-full transition-all duration-300"
-                  style={{ width: `${(currentStep / 4) * 100}%` }}
+                  style={{ width: `${(currentStep / 2) * 100}%` }}
                 />
               </div>
             </div>
             <div className="flex items-center justify-between mt-2">
-              <span className="text-xs text-gray-600">Summary</span>
-              <span className="text-xs text-gray-600">Impact</span>
-              <span className="text-xs text-gray-600">Risk</span>
-              <span className="text-xs text-gray-600">Review</span>
+              <span className="text-xs text-gray-600">Initial report</span>
+              <span className="text-xs text-gray-600">Impact &amp; create</span>
             </div>
           </div>
 
@@ -260,25 +299,46 @@ export default function NewIncidentPage() {
               {/* Nature of Incident */}
               <div className="mb-6">
                 <label className="block text-sm font-medium text-gray-700 mb-2">
-                  Nature of Incident *
+                  Short summary / headline *
                 </label>
                 <textarea
                   value={natureOfIncident}
                   onChange={(e) => setNatureOfIncident(e.target.value)}
-                  placeholder="Brief description (max 200 chars)"
-                  maxLength={200}
+                  placeholder="Concise title for lists and dashboards (you can add detail below)."
+                  maxLength={NATURE_MAX}
                   className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-                  rows={3}
+                  rows={4}
                 />
                 <div className="text-xs text-gray-500 mt-1">
-                  {natureOfIncident.length}/200 characters
+                  {natureOfIncident.length}/{NATURE_MAX} characters
+                </div>
+              </div>
+
+              <div className="mb-6">
+                <label className="block text-sm font-medium text-gray-700 mb-2">
+                  Further details (optional)
+                </label>
+                <p className="text-xs text-gray-500 mb-2">
+                  Timeline, links, who reported, technical context — everything you already know. Legal risk assessment
+                  is recorded later in the incident.
+                </p>
+                <textarea
+                  value={additionalDescription}
+                  onChange={(e) => setAdditionalDescription(e.target.value)}
+                  placeholder="Optional longer description…"
+                  maxLength={ADDITIONAL_MAX}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                  rows={8}
+                />
+                <div className="text-xs text-gray-500 mt-1">
+                  {additionalDescription.length}/{ADDITIONAL_MAX} characters
                 </div>
               </div>
 
               {/* Affected Systems */}
               <div className="mb-6">
                 <label className="block text-sm font-medium text-gray-700 mb-2">
-                  Affected Systems * (Multi-Select)
+                  Affected systems * (multi-select)
                 </label>
                 <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
                   {AFFECTED_SYSTEMS.map((system) => (
@@ -297,12 +357,24 @@ export default function NewIncidentPage() {
                     </button>
                   ))}
                 </div>
+                {affectedSystems.includes(OTHER_CHOICE) && (
+                  <div className="mt-3">
+                    <label className="block text-xs font-medium text-gray-600 mb-1">Describe “Other” *</label>
+                    <input
+                      type="text"
+                      value={otherSystemDetail}
+                      onChange={(e) => setOtherSystemDetail(e.target.value)}
+                      placeholder="e.g. vendor ticketing tool, warehouse scanner app…"
+                      className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500"
+                    />
+                  </div>
+                )}
               </div>
 
               {/* Data Categories Affected */}
               <div className="mb-6">
                 <label className="block text-sm font-medium text-gray-700 mb-2">
-                  Data Categories Affected * (Multi-Select)
+                  Data categories affected * (multi-select)
                 </label>
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                   {DATA_CATEGORIES.map((category) => (
@@ -321,6 +393,18 @@ export default function NewIncidentPage() {
                     </button>
                   ))}
                 </div>
+                {dataCategories.includes(OTHER_CHOICE) && (
+                  <div className="mt-3">
+                    <label className="block text-xs font-medium text-gray-600 mb-1">Describe “Other” *</label>
+                    <input
+                      type="text"
+                      value={otherDataCategoryDetail}
+                      onChange={(e) => setOtherDataCategoryDetail(e.target.value)}
+                      placeholder="e.g. employee IDs, CCTV metadata…"
+                      className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500"
+                    />
+                  </div>
+                )}
               </div>
 
               {/* Discovery Date */}
@@ -390,22 +474,49 @@ export default function NewIncidentPage() {
               {/* Breach Types (Multi-Select) */}
               <div className="mb-6">
                 <label className="block text-sm font-medium text-gray-700 mb-2">
-                  Breach Types * (Multi-Select)
+                  Breach characterisation * (multi-select)
                 </label>
+                <p className="text-xs text-gray-600 mb-3 leading-relaxed">
+                  Most personal-data incidents map to the <strong>CIA triad</strong> (availability, confidentiality,
+                  integrity). Choose <strong>Other</strong> for mixed cases, early unclear facts, or issues that do not
+                  fit these three (e.g. some Art. 32 security failures). Legal will refine the formal assessment in the
+                  incident record.
+                </p>
                 <div className="space-y-2">
-                  {(['Loss of Availability', 'Loss of Confidentiality', 'Loss of Integrity'] as LegalRiskType[]).map((risk) => (
-                    <label key={risk} className="flex items-center">
+                  {(
+                    [
+                      'Loss of Availability',
+                      'Loss of Confidentiality',
+                      'Loss of Integrity',
+                      'Other / not solely CIA',
+                    ] as const
+                  ).map((risk) => (
+                    <label key={risk} className="flex items-start gap-2">
                       <input
                         type="checkbox"
                         value={risk}
                         checked={breachTypes.includes(risk)}
                         onChange={() => toggleBreachType(risk)}
-                        className="mr-2 text-blue-600 focus:ring-blue-500 rounded"
+                        className="mt-1 text-blue-600 focus:ring-blue-500 rounded"
                       />
-                      {risk}
+                      <span>{risk}</span>
                     </label>
                   ))}
                 </div>
+                {breachTypes.includes('Other / not solely CIA') && (
+                  <div className="mt-3">
+                    <label className="block text-xs font-medium text-gray-600 mb-1">
+                      Describe “Other” * (min. 10 characters)
+                    </label>
+                    <textarea
+                      value={breachOtherDetails}
+                      onChange={(e) => setBreachOtherDetails(e.target.value)}
+                      placeholder="What happened and why it is not covered by the three types above?"
+                      rows={4}
+                      className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500"
+                    />
+                  </div>
+                )}
               </div>
 
               {/* Country Impact Table */}
@@ -425,9 +536,9 @@ export default function NewIncidentPage() {
                     </thead>
                     <tbody>
                       {Object.entries(COUNTRY_GROUPS).map(([groupName, countries]) => (
-                        <>
+                        <Fragment key={groupName}>
                           {/* Group Header */}
-                          <tr key={`group-${groupName}`} className="bg-gray-50">
+                          <tr className="bg-gray-50">
                             <td colSpan={4} className="px-4 py-2 text-xs font-bold text-gray-600 uppercase border-t-2 border-gray-300">
                               {groupName}
                             </td>
@@ -473,7 +584,7 @@ export default function NewIncidentPage() {
                               </tr>
                             );
                           })}
-                        </>
+                        </Fragment>
                       ))}
                     </tbody>
                   </table>
@@ -490,262 +601,36 @@ export default function NewIncidentPage() {
                 </div>
               </div>
 
+              <div className="bg-amber-50 border border-amber-200 rounded-lg p-4 mb-6">
+                <div className="flex items-start gap-2 text-sm text-amber-950">
+                  <ExclamationTriangleIcon className="w-5 h-5 flex-shrink-0 mt-0.5" />
+                  <div>
+                    <strong className="block mb-1">After you create the incident</strong>
+                    Legal completes risk assessment, notification decision, and reasoning in the incident record (not in
+                    this form). You can still edit investigation fields as facts emerge.
+                  </div>
+                </div>
+              </div>
+
               <div className="flex justify-between">
                 <button
+                  type="button"
                   onClick={() => setCurrentStep(1)}
                   className="px-6 py-3 bg-white border border-gray-300 rounded-lg hover:bg-gray-50 font-semibold"
                 >
                   ← Back
                 </button>
                 <button
-                  onClick={() => setCurrentStep(3)}
-                  disabled={!canProceedToStep3()}
-                  className={`px-6 py-3 font-semibold rounded-lg ${
-                    canProceedToStep3()
-                      ? 'bg-blue-600 text-white hover:bg-blue-700'
-                      : 'bg-gray-300 text-gray-500 cursor-not-allowed'
-                  }`}
-                >
-                  Next: Risk Assessment →
-                </button>
-              </div>
-            </div>
-          )}
-
-          {/* Step 3: Risk Assessment */}
-          {currentStep === 3 && (
-            <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6 mb-6">
-              <h2 className="text-xl font-bold text-gray-900 mb-6 flex items-center gap-2">
-                <ExclamationTriangleIcon className="w-6 h-6 text-orange-600" />
-                Risk Assessment
-              </h2>
-
-              {/* Severity Dropdown */}
-              <div className="mb-6">
-                <label className="block text-sm font-medium text-gray-700 mb-2">
-                  Severity Level *
-                </label>
-                <select
-                  value={severity}
-                  onChange={(e) => setSeverity(e.target.value as any)}
-                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-                >
-                  <option value="">Select severity...</option>
-                  <option value="Low">Low</option>
-                  <option value="Medium">Medium</option>
-                  <option value="High">High</option>
-                  <option value="Critical">Critical</option>
-                </select>
-              </div>
-
-              {/* DPA Notification Required */}
-              <div className="mb-6">
-                <label className="block text-sm font-medium text-gray-700 mb-2">
-                  DPA Notification Required? *
-                </label>
-                <div className="space-y-2">
-                  <label className="flex items-center">
-                    <input
-                      type="radio"
-                      name="dpaNotification"
-                      value="Yes"
-                      checked={dpaNotificationRequired === 'Yes'}
-                      onChange={(e) => setDpaNotificationRequired(e.target.value as 'Yes')}
-                      className="mr-2 text-blue-600 focus:ring-blue-500"
-                    />
-                    Yes
-                  </label>
-                  <label className="flex items-center">
-                    <input
-                      type="radio"
-                      name="dpaNotification"
-                      value="No"
-                      checked={dpaNotificationRequired === 'No'}
-                      onChange={(e) => setDpaNotificationRequired(e.target.value as 'No')}
-                      className="mr-2 text-blue-600 focus:ring-blue-500"
-                    />
-                    No
-                  </label>
-                </div>
-              </div>
-
-              {/* DPA Reference Number (conditional) */}
-              {dpaNotificationRequired === 'Yes' && (
-                <div className="mb-6">
-                  <label className="block text-sm font-medium text-gray-700 mb-2">
-                    DPA Reference Number (optional)
-                  </label>
-                  <input
-                    type="text"
-                    value={dpaReferenceNumber}
-                    onChange={(e) => setDpaReferenceNumber(e.target.value)}
-                    placeholder="Can be filled later if not yet available"
-                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-                  />
-                </div>
-              )}
-
-              {/* Legal Reasoning */}
-              <div className="mb-6">
-                <label className="block text-sm font-medium text-gray-700 mb-2">
-                  Legal Reasoning *
-                </label>
-                <textarea
-                  value={legalReasoningText}
-                  onChange={(e) => setLegalReasoningText(e.target.value)}
-                  placeholder="Document the basis for the notification decision (Art. 33 GDPR considerations, risk to rights and freedoms of data subjects, etc.)"
-                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-                  rows={5}
-                />
-              </div>
-
-              {/* Helper Link */}
-              <div className="mb-6 p-4 bg-blue-50 border border-blue-200 rounded-lg">
-                <div className="flex items-start gap-2">
-                  <svg className="w-5 h-5 text-blue-600 mt-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-                  </svg>
-                  <div className="text-sm text-blue-900">
-                    <strong>Need help deciding?</strong> Consult the{' '}
-                    <a 
-                      href="https://ico.org.uk/for-organisations/guide-to-data-protection/guide-to-the-general-data-protection-regulation-gdpr/personal-data-breaches/"
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="text-blue-600 hover:text-blue-800 underline"
-                    >
-                      Art. 33 Decision Tree
-                    </a>
-                    {' '}for guidance on notification requirements.
-                  </div>
-                </div>
-              </div>
-
-              <div className="flex justify-between">
-                <button
-                  onClick={() => setCurrentStep(2)}
-                  className="px-6 py-3 bg-white border border-gray-300 rounded-lg hover:bg-gray-50 font-semibold"
-                >
-                  ← Back
-                </button>
-                <button
-                  onClick={() => setCurrentStep(4)}
-                  disabled={!canProceedToStep4()}
-                  className={`px-6 py-3 font-semibold rounded-lg ${
-                    canProceedToStep4()
-                      ? 'bg-blue-600 text-white hover:bg-blue-700'
-                      : 'bg-gray-300 text-gray-500 cursor-not-allowed'
-                  }`}
-                >
-                  Next: Review →
-                </button>
-              </div>
-            </div>
-          )}
-
-          {/* Step 4: Review & Submit */}
-          {currentStep === 4 && (
-            <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6 mb-6">
-              <h2 className="text-xl font-bold text-gray-900 mb-6 flex items-center gap-2">
-                <svg className="w-6 h-6 text-gray-700" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
-                </svg>
-                Review & Submit
-              </h2>
-
-              <div className="space-y-4 mb-6">
-                <div>
-                  <div className="text-sm font-medium text-gray-700">Nature of Incident:</div>
-                  <div className="text-gray-900">{natureOfIncident}</div>
-                </div>
-                <div>
-                  <div className="text-sm font-medium text-gray-700">Affected Systems:</div>
-                  <div className="text-gray-900">{affectedSystems.join(', ')}</div>
-                </div>
-                <div>
-                  <div className="text-sm font-medium text-gray-700">Data Categories Affected:</div>
-                  <div className="text-gray-900">{dataCategories.join(', ')}</div>
-                </div>
-                <div>
-                  <div className="text-sm font-medium text-gray-700">Discovery Date:</div>
-                  <div className="text-gray-900">{new Date(discoveryDate).toLocaleDateString()}</div>
-                </div>
-                <div>
-                  <div className="text-sm font-medium text-gray-700">Breach Types:</div>
-                  <div className="text-gray-900">{breachTypes.join(', ')}</div>
-                </div>
-                <div>
-                  <div className="text-sm font-medium text-gray-700">Total Impacted:</div>
-                  <div className="text-gray-900 text-2xl font-bold">{totalImpacted.toLocaleString()} customers</div>
-                </div>
-                
-                {/* Risk Assessment Summary */}
-                <div className="pt-4 border-t border-gray-200">
-                  <div className="text-sm font-medium text-gray-700 mb-2">Risk Assessment:</div>
-                  <div className="space-y-2">
-                    <div className="flex items-center gap-2">
-                      <span className="text-sm text-gray-600">Severity:</span>
-                      <span className={`px-3 py-1 rounded-full text-sm font-semibold ${
-                        severity === 'Critical' ? 'bg-red-100 text-red-800' :
-                        severity === 'High' ? 'bg-orange-100 text-orange-800' :
-                        severity === 'Medium' ? 'bg-yellow-100 text-yellow-800' :
-                        'bg-green-100 text-green-800'
-                      }`}>
-                        {severity}
-                      </span>
-                    </div>
-                    <div className="flex items-center gap-2">
-                      <span className="text-sm text-gray-600">DPA Notification:</span>
-                      <span className={`px-3 py-1 rounded-full text-sm font-semibold ${
-                        dpaNotificationRequired === 'Yes' ? 'bg-red-100 text-red-800' : 'bg-gray-100 text-gray-800'
-                      }`}>
-                        {dpaNotificationRequired}
-                      </span>
-                    </div>
-                    {dpaNotificationRequired === 'Yes' && dpaReferenceNumber && (
-                      <div className="flex items-center gap-2">
-                        <span className="text-sm text-gray-600">DPA Reference:</span>
-                        <span className="text-sm text-gray-900">{dpaReferenceNumber}</span>
-                      </div>
-                    )}
-                    <div>
-                      <span className="text-sm text-gray-600">Legal Reasoning:</span>
-                      <div className="text-sm text-gray-900 mt-1 p-3 bg-gray-50 rounded-lg">
-                        {legalReasoningText}
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              </div>
-
-              <div className="bg-blue-50 border border-blue-200 rounded-lg p-4 mb-6">
-                <div className="text-sm text-blue-900">
-                  <strong className="flex items-center gap-1">
-                    <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" />
-                    </svg>
-                    Next Steps:
-                  </strong> After creating this incident, it will be assigned status "Reporting". 
-                  You can then proceed to Investigation phase to add root cause analysis.
-                </div>
-              </div>
-
-              <div className="flex justify-between">
-                <button
-                  onClick={() => setCurrentStep(3)}
-                  className="px-6 py-3 bg-white border border-gray-300 rounded-lg hover:bg-gray-50 font-semibold"
-                >
-                  ← Back
-                </button>
-                <button
+                  type="button"
                   onClick={handleSubmit}
-                  disabled={saving}
+                  disabled={!canSubmitImpactStep() || saving}
                   className={`px-6 py-3 font-semibold rounded-lg ${
-                    saving
-                      ? 'bg-gray-300 text-gray-500 cursor-not-allowed'
-                      : 'bg-blue-600 text-white hover:bg-blue-700'
+                    canSubmitImpactStep() && !saving
+                      ? 'bg-blue-600 text-white hover:bg-blue-700'
+                      : 'bg-gray-300 text-gray-500 cursor-not-allowed'
                   }`}
                 >
-                  {saving ? 'Creating...' : 'Create Incident'}
+                  {saving ? 'Creating…' : 'Create incident'}
                 </button>
               </div>
             </div>

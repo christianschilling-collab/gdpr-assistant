@@ -2,14 +2,15 @@
 
 import { useState, useEffect } from 'react';
 import { useParams, useRouter } from 'next/navigation';
-import { 
-  getIncident, 
-  updateIncidentStatus, 
+import {
+  getIncident,
+  updateIncidentStatus,
   updateIncidentField,
-  getIncidentTasks, 
+  getIncidentTasks,
   getIncidentAuditLog,
   completeIncidentTask,
   reopenIncidentTask,
+  calculateNotificationDeadline,
 } from '@/lib/firebase/incidents';
 import { Incident, IncidentTask, IncidentAuditLog, IncidentStatus } from '@/lib/types';
 import { useToast } from '@/lib/contexts/ToastContext';
@@ -36,11 +37,6 @@ import {
   generateIncidentCSV,
   downloadCSV,
 } from '@/lib/utils/exportIncident';
-import {
-  resolveAssigneeInputToStoredEmail,
-  BOARD_UNASSIGNED,
-} from '@/lib/board/assigneeEmailDirectory';
-
 const STATUS_FLOW: IncidentStatus[] = [
   'Reporting',
   'Investigation',
@@ -78,8 +74,13 @@ export default function IncidentDetailPage() {
   const [preventiveMeasures, setPreventiveMeasures] = useState('');
   const [workaroundCS, setWorkaroundCS] = useState('');
   const [legalReasoning, setLegalReasoning] = useState('');
-  const [assignedToDraft, setAssignedToDraft] = useState('');
-  const [savingAssignedTo, setSavingAssignedTo] = useState(false);
+  /** Re-render periodically so Art. 33 countdown stays current */
+  const [timeTick, setTimeTick] = useState(0);
+
+  useEffect(() => {
+    const id = window.setInterval(() => setTimeTick((t) => t + 1), 30_000);
+    return () => window.clearInterval(id);
+  }, []);
 
   useEffect(() => {
     console.log('🎯 useEffect triggered, incidentId:', incidentId);
@@ -134,7 +135,6 @@ export default function IncidentDetailPage() {
       setPreventiveMeasures(incidentData.preventiveMeasures || '');
       setWorkaroundCS(incidentData.workaroundCS || '');
       setLegalReasoning(incidentData.legalReasoning || '');
-      setAssignedToDraft((incidentData.assignedTo || '').trim());
     } catch (error) {
       console.error('Error loading incident:', error);
       addToast('Failed to load incident data', 'error');
@@ -222,33 +222,6 @@ export default function IncidentDetailPage() {
     }
   }
   
-  async function handleSaveAssignedTo() {
-    if (!incident) return;
-    setSavingAssignedTo(true);
-    try {
-      const raw = assignedToDraft.trim();
-      const resolved = await resolveAssigneeInputToStoredEmail(raw);
-      if (raw && !raw.includes('@') && resolved === BOARD_UNASSIGNED) {
-        addToast(
-          'Kein passendes Benutzerprofil: bitte Arbeits-E-Mail eintragen (oder in Admin → Users anlegen).',
-          'warning'
-        );
-      }
-      const next = resolved === BOARD_UNASSIGNED ? 'Unassigned' : resolved;
-      await updateIncidentField(incident.id, 'assignedTo', next, userEmail);
-      setIncident({ ...incident, assignedTo: next });
-      setAssignedToDraft(next === 'Unassigned' ? '' : next);
-      addToast('Assigned agent saved.', 'success');
-      await new Promise((r) => setTimeout(r, 400));
-      await loadIncidentData();
-    } catch (error) {
-      console.error('Error saving assigned agent:', error);
-      addToast('Failed to save assigned agent', 'error');
-    } finally {
-      setSavingAssignedTo(false);
-    }
-  }
-
   async function handleSaveField(fieldName: string, value: string) {
     if (!incident) return;
     
@@ -274,7 +247,6 @@ export default function IncidentDetailPage() {
         preventiveMeasures: 'Preventive Measures',
         workaroundCS: 'CS Workaround',
         legalReasoning: 'Legal Reasoning',
-        assignedTo: 'Assigned agent',
       };
       
       const displayName = fieldDisplayNames[fieldName] || fieldName;
@@ -360,60 +332,103 @@ export default function IncidentDetailPage() {
   }
 
   const currentStatusIndex = STATUS_FLOW.indexOf(incident.status);
-  const totalImpacted = incident.countryImpact.reduce((sum, c) => sum + c.impactedVolume, 0);
-  const daysSinceDiscovery = Math.floor(
-    (Date.now() - incident.discoveryDate.getTime()) / (1000 * 60 * 60 * 24)
+  const totalImpacted = incident.countryImpact.reduce(
+    (sum, c) => sum + (c.impactedVolume ?? 0),
+    0
   );
-  
   // Calculate open tasks (live - updates when tasks change)
   const openTasksCount = tasks.filter(t => t.status !== 'completed').length;
+
+  void timeTick;
+  const art33Deadline =
+    incident.notificationDeadline ?? calculateNotificationDeadline(incident.discoveryDate);
+  const nowMs = Date.now();
+  const art33WindowMs = Math.max(art33Deadline.getTime() - incident.discoveryDate.getTime(), 1);
+  const art33ElapsedMs = nowMs - incident.discoveryDate.getTime();
+  const art33ProgressPct = Math.min(100, Math.max(0, (art33ElapsedMs / art33WindowMs) * 100));
+  const hoursRemainingArt33 = Math.floor(
+    (art33Deadline.getTime() - nowMs) / (1000 * 60 * 60)
+  );
+  const hoursSinceDiscoveryForArt33 = Math.floor(art33ElapsedMs / (1000 * 60 * 60));
+  const art33Overdue = hoursRemainingArt33 < 0 && !incident.authorityNotifiedAt;
+  const art33BarColor =
+    incident.authorityNotifiedAt || incident.status === 'Closed'
+      ? 'bg-emerald-500'
+      : art33Overdue || art33ProgressPct >= 100
+        ? 'bg-red-500'
+        : art33ProgressPct >= 75
+          ? 'bg-orange-500'
+          : art33ProgressPct >= 50
+            ? 'bg-amber-400'
+            : 'bg-emerald-500';
 
   return (
     <ErrorBoundary componentName="IncidentDetailPage">
       <div className="min-h-screen bg-gray-50 py-8 px-4">
         <div className="max-w-7xl mx-auto">
-          {/* Header */}
-          <div className="mb-6">
+          {/* Header — layout aligned with Trackboard / Reporting toolbars */}
+          <div className="mb-6 rounded-xl border border-gray-200 bg-white p-4 shadow-sm sm:p-5">
             <button
+              type="button"
               onClick={() => router.push('/incidents')}
-              className="text-gray-600 hover:text-gray-900 mb-4 flex items-center gap-2"
+              className="text-sm text-gray-600 hover:text-gray-900 flex items-center gap-2"
             >
               ← Back to Incidents
             </button>
-            <div className="flex items-start justify-between">
-              <div>
-                <h1 className="text-3xl font-bold text-gray-900">
+            <div className="mt-3 flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+              <div className="min-w-0 flex-1">
+                <h1 className="text-2xl font-bold text-gray-900 sm:text-3xl">
                   Incident {incident.incidentId}
                 </h1>
-                <p className="text-gray-600 mt-1">{incident.natureOfIncident}</p>
+                <p className="text-gray-600 mt-1 text-sm sm:text-base">{incident.natureOfIncident}</p>
+                <p className="mt-2 text-sm text-gray-500">
+                  Opened by{' '}
+                  <span className="font-medium text-gray-800">{incident.createdBy}</span>
+                  {(incident.assignedTo && incident.assignedTo !== incident.createdBy) && (
+                    <>
+                      {' '}
+                      · Trackboard contact{' '}
+                      <span className="font-medium text-gray-800">{incident.assignedTo}</span>
+                    </>
+                  )}
+                </p>
               </div>
-              <div className="flex gap-3">
-                {/* Export Buttons */}
-                <button
-                  onClick={handleExportPDF}
-                  className="px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 font-semibold flex items-center gap-2"
-                  title="Export as PDF (HelloFresh 2026 Design)"
+              <div className="flex flex-shrink-0 flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-center">
+                <span
+                  className={`inline-flex items-center justify-center rounded-full px-3 py-1.5 text-xs font-semibold sm:text-sm ${
+                    incident.status === 'Closed'
+                      ? 'bg-gray-100 text-gray-800'
+                      : incident.status === 'Resolution' || incident.status === 'Post-Incident Review'
+                        ? 'bg-blue-100 text-blue-800'
+                        : incident.status === 'Containment'
+                          ? 'bg-amber-100 text-amber-900'
+                          : incident.status === 'Investigation'
+                            ? 'bg-violet-100 text-violet-900'
+                            : 'bg-red-100 text-red-800'
+                  }`}
                 >
-                  <DocumentArrowDownIcon className="w-5 h-5" />
-                  Export PDF
-                </button>
-                <button
-                  onClick={handleExportCSV}
-                  className="px-4 py-2 bg-gray-600 text-white rounded-lg hover:bg-gray-700 font-semibold flex items-center gap-2"
-                  title="Export as CSV (Technical Backup)"
-                >
-                  <DocumentChartBarIcon className="w-5 h-5" />
-                  Export CSV
-                </button>
-                
-                <span className={`px-4 py-2 rounded-full text-sm font-semibold ${
-                  incident.status === 'Closed' ? 'bg-gray-100 text-gray-800' :
-                  incident.status === 'Resolution' || incident.status === 'Post-Incident Review' ? 'bg-blue-100 text-blue-800' :
-                  incident.status === 'Containment' ? 'bg-yellow-100 text-yellow-800' :
-                  'bg-red-100 text-red-800'
-                }`}>
                   {incident.status}
                 </span>
+                <div className="flex flex-wrap gap-2">
+                  <button
+                    type="button"
+                    onClick={handleExportPDF}
+                    className="inline-flex items-center justify-center gap-2 rounded-lg border border-gray-300 bg-white px-4 py-2 text-sm font-semibold text-gray-800 shadow-sm transition hover:bg-gray-50"
+                    title="Export as PDF"
+                  >
+                    <DocumentArrowDownIcon className="h-5 w-5 text-gray-600" />
+                    Export PDF
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleExportCSV}
+                    className="inline-flex items-center justify-center gap-2 rounded-lg border border-gray-300 bg-white px-4 py-2 text-sm font-semibold text-gray-800 shadow-sm transition hover:bg-gray-50"
+                    title="Export as CSV"
+                  >
+                    <DocumentChartBarIcon className="h-5 w-5 text-gray-600" />
+                    Export CSV
+                  </button>
+                </div>
               </div>
             </div>
           </div>
@@ -463,9 +478,89 @@ export default function IncidentDetailPage() {
             </div>
           </div>
 
+          {/* Legal risk assessment — intake no longer requires it; prompt until Legal records it */}
+          {!incident.riskAssessment && (
+            <div
+              className={`mb-6 flex gap-3 rounded-xl border p-4 shadow-sm ${
+                incident.status === 'Closed'
+                  ? 'border-gray-200 bg-gray-50 text-gray-800'
+                  : 'border-amber-200 bg-amber-50 text-amber-950'
+              }`}
+            >
+              <ExclamationTriangleIcon
+                className={`h-6 w-6 flex-shrink-0 ${incident.status === 'Closed' ? 'text-gray-500' : 'text-amber-600'}`}
+              />
+              <div className="min-w-0 text-sm leading-relaxed">
+                <p className="font-semibold">
+                  {incident.status === 'Closed'
+                    ? 'No formal risk level in this record'
+                    : 'Legal risk assessment pending'}
+                </p>
+                <p className="mt-1">
+                  {incident.status === 'Closed' ? (
+                    <>
+                      This incident was closed without a stored severity. Add one only if you are correcting the
+                      record; otherwise exports may show ‘Not assessed’.
+                    </>
+                  ) : (
+                    <>
+                      Severity and legal reasoning are completed by Legal in the workflow below (Investigation → Risk
+                      assessment). Until then, dashboards and exports may show ‘Not assessed’.
+                    </>
+                  )}
+                </p>
+              </div>
+            </div>
+          )}
+
+          {/* Art. 33 — same window as Trackboard (discovery → 72h deadline) */}
+          <div
+            className={`mb-6 rounded-xl border p-5 shadow-sm ${
+              incident.authorityNotifiedAt
+                ? 'border-emerald-200 bg-emerald-50/60'
+                : art33Overdue
+                  ? 'border-red-200 bg-red-50/50'
+                  : 'border-gray-200 bg-white'
+            }`}
+          >
+            <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+              <div>
+                <h2 className="text-lg font-bold text-gray-900">Art. 33 — supervisory authority window</h2>
+                <p className="mt-1 text-sm text-gray-600">
+                  From discovery ({incident.discoveryDate.toLocaleString()}) to regulatory notification deadline (
+                  {art33Deadline.toLocaleString()}).
+                </p>
+              </div>
+              <div className="text-right text-sm">
+                {incident.authorityNotifiedAt ? (
+                  <span className="font-semibold text-emerald-800">
+                    Authority notified {incident.authorityNotifiedAt.toLocaleString()}
+                  </span>
+                ) : art33Overdue ? (
+                  <span className="font-semibold text-red-700">OVERDUE — review notification status</span>
+                ) : (
+                  <>
+                    <div className="font-semibold text-gray-900">{hoursRemainingArt33}h left</div>
+                    <div className="text-gray-500">{hoursSinceDiscoveryForArt33}h since discovery</div>
+                  </>
+                )}
+              </div>
+            </div>
+            <div className="mt-4 h-2.5 overflow-hidden rounded-full bg-gray-200">
+              <div
+                className={`h-full transition-all ${art33BarColor}`}
+                style={{ width: `${art33ProgressPct}%` }}
+              />
+            </div>
+            <p className="mt-2 text-xs text-gray-500">
+              Matches the GDPR trackboard countdown. Workflow phases below are separate from this legal deadline.
+            </p>
+          </div>
+
           {/* Status Workflow */}
           <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6 mb-6">
-            <h2 className="text-xl font-bold text-gray-900 mb-4">Workflow Progress</h2>
+            <h2 className="text-xl font-bold text-gray-900 mb-1">Workflow timeline</h2>
+            <p className="mb-4 text-sm text-gray-500">Internal phases from initial reporting to closure.</p>
             <div className="flex items-center gap-2 mb-6">
               {STATUS_FLOW.map((status, index) => (
                 <div key={status} className="flex items-center flex-1">
@@ -495,7 +590,7 @@ export default function IncidentDetailPage() {
                   <button
                     onClick={() => handleStatusButtonClick(STATUS_FLOW[currentStatusIndex + 1])}
                     disabled={updating}
-                    className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 font-semibold"
+                    className="rounded-lg bg-emerald-600 px-4 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-emerald-700 disabled:opacity-50"
                   >
                     Move to {STATUS_FLOW[currentStatusIndex + 1]}
                   </button>
@@ -513,8 +608,16 @@ export default function IncidentDetailPage() {
                 <div className="space-y-3">
                   <div>
                     <div className="text-sm font-medium text-gray-700">Nature of Incident</div>
-                    <div className="text-gray-900">{incident.natureOfIncident}</div>
+                    <div className="text-gray-900 whitespace-pre-wrap">{incident.natureOfIncident}</div>
                   </div>
+                  {incident.additionalDescription?.trim() && (
+                    <div>
+                      <div className="text-sm font-medium text-gray-700">Initial details (at intake)</div>
+                      <div className="text-gray-900 whitespace-pre-wrap text-sm leading-relaxed">
+                        {incident.additionalDescription}
+                      </div>
+                    </div>
+                  )}
                   <div>
                     <div className="text-sm font-medium text-gray-700">Affected Systems</div>
                     <div className="flex flex-wrap gap-2 mt-1">
@@ -535,6 +638,24 @@ export default function IncidentDetailPage() {
                           </span>
                         ))}
                       </div>
+                    </div>
+                  )}
+                  {incident.breachTypes && incident.breachTypes.length > 0 && (
+                    <div>
+                      <div className="text-sm font-medium text-gray-700">Breach characterisation</div>
+                      <div className="flex flex-wrap gap-2 mt-1">
+                        {incident.breachTypes.map((bt) => (
+                          <span key={bt} className="px-2 py-1 bg-red-50 text-red-900 rounded text-sm">
+                            {bt.replace('Loss of ', '')}
+                          </span>
+                        ))}
+                      </div>
+                      {incident.breachOtherDetails?.trim() && (
+                        <div className="mt-2 text-sm text-gray-700 whitespace-pre-wrap">
+                          <span className="font-medium text-gray-800">Other (details): </span>
+                          {incident.breachOtherDetails}
+                        </div>
+                      )}
                     </div>
                   )}
                   <div>
@@ -934,36 +1055,27 @@ export default function IncidentDetailPage() {
             {/* Right Column */}
             <div className="space-y-6">
               <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
-                <h2 className="text-xl font-bold text-gray-900 mb-3">Assigned agent</h2>
-                <p className="text-xs text-gray-500 mb-3">
-                  Shown on the GDPR trackboard. Use a short name or work email.
+                <h2 className="text-xl font-bold text-gray-900 mb-3">Ownership</h2>
+                <dl className="space-y-4 text-sm">
+                  <div>
+                    <dt className="text-xs font-semibold uppercase tracking-wide text-gray-500">
+                      Case opened by
+                    </dt>
+                    <dd className="mt-1 font-medium text-gray-900 break-all">{incident.createdBy}</dd>
+                  </div>
+                  <div>
+                    <dt className="text-xs font-semibold uppercase tracking-wide text-gray-500">
+                      Trackboard owner
+                    </dt>
+                    <dd className="mt-1 font-medium text-gray-900 break-all">
+                      {incident.assignedTo || incident.createdBy}
+                    </dd>
+                  </div>
+                </dl>
+                <p className="mt-4 text-xs leading-relaxed text-gray-500">
+                  New incidents default to the opener on the trackboard. Older cases without a stored owner fall back
+                  to the opener here and on the board.
                 </p>
-                <input
-                  type="text"
-                  value={assignedToDraft}
-                  onChange={(e) => setAssignedToDraft(e.target.value)}
-                  placeholder="Name or email"
-                  className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm text-gray-900 focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-                />
-                <div className="flex flex-wrap gap-2 mt-3">
-                  {user?.email && (
-                    <button
-                      type="button"
-                      onClick={() => setAssignedToDraft(user.email || '')}
-                      className="px-3 py-1.5 text-xs bg-gray-100 text-gray-800 rounded-lg hover:bg-gray-200"
-                    >
-                      Use my account
-                    </button>
-                  )}
-                  <button
-                    type="button"
-                    onClick={handleSaveAssignedTo}
-                    disabled={savingAssignedTo}
-                    className="px-3 py-1.5 text-xs font-semibold bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50"
-                  >
-                    {savingAssignedTo ? 'Saving…' : 'Save'}
-                  </button>
-                </div>
               </div>
 
               {/* Tasks */}
