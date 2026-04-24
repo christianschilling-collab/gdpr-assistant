@@ -7,6 +7,7 @@ import Image from 'next/image';
 import { useAuth } from '@/lib/contexts/AuthContext';
 import { formatRecentCaseTime } from '@/lib/utils/recentCases';
 import { OnboardingBanner } from './OnboardingBanner';
+import { isGdprAssistantAdminEmail } from '@/lib/auth/gdprAssistantAdmins';
 
 export function Navigation() {
   const pathname = usePathname();
@@ -40,12 +41,7 @@ export function Navigation() {
   }, [user, userProfile, userRole, isAdmin]);
 
   // TEMPORARY FALLBACK: Check email directly if Firestore profile not loaded yet
-  const ADMIN_EMAILS = [
-    'christian.schilling@hellofresh.com',
-    'christian.schilling@ext.hellofresh.com',
-    'christian.schilling@hellofresh.de',
-  ];
-  const isAdminByEmail = user?.email && ADMIN_EMAILS.includes(user.email);
+  const isAdminByEmail = user?.email && isGdprAssistantAdminEmail(user.email);
   const hasAdminAccess = isAdmin || isAdminByEmail;
 
   const isAdminPage = pathname?.startsWith('/admin');
@@ -218,6 +214,19 @@ export function Navigation() {
                        </svg>
                        Submit week
                      </Link>
+                     <Link
+                       href="/agent-daily-log"
+                       className={`shrink-0 px-2.5 py-2 rounded-md text-xs font-medium flex items-center gap-1 whitespace-nowrap ${
+                         pathname?.startsWith('/agent-daily-log')
+                           ? `${activeBg} ${activeText}`
+                           : `${textColor} ${hoverBg}`
+                       }`}
+                     >
+                       <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4" />
+                       </svg>
+                       Daily log
+                     </Link>
               {hasAdminAccess && (
                       <Link
                         href="/admin"
@@ -389,6 +398,17 @@ export function Navigation() {
                   }`}
                 >
                   Submit week
+                </Link>
+                <Link
+                  href="/agent-daily-log"
+                  onClick={() => setNavMenuOpen(false)}
+                  className={`rounded-lg px-3 py-2.5 text-sm font-medium ${
+                    pathname?.startsWith('/agent-daily-log')
+                      ? `${activeBg} ${activeText}`
+                      : `${textColor} ${hoverBg}`
+                  }`}
+                >
+                  Daily log
                 </Link>
                 {hasAdminAccess ? (
                   <Link

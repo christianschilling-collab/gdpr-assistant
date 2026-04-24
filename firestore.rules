@@ -135,6 +135,22 @@ service cloud.firestore {
       return request.auth != null;
     }
 
+    /** Normalized sign-in email for GDPR client data (matches app’s lowercase userEmail). */
+    function gdprActorEmailLower() {
+      return request.auth != null && request.auth.token.email is string
+        ? request.auth.token.email.trim().lower()
+        : '';
+    }
+
+    /** Admin / platform admin — used for `dailyQueueSettings` writes only. */
+    function gdprAdminActor() {
+      return gdprActorEmailLower() != '' && (
+        exists(/databases/$(database)/documents/platformAdmins/$(gdprActorEmailLower())) ||
+        (exists(/databases/$(database)/documents/users/$(gdprActorEmailLower())) &&
+          get(/databases/$(database)/documents/users/$(gdprActorEmailLower())).data.role == 'admin')
+      );
+    }
+
     match /users/{userId} {
       allow read, write: if gdprSignedIn();
     }
@@ -197,6 +213,62 @@ service cloud.firestore {
 
     match /activityLog/{logId} {
       allow read, write: if gdprSignedIn();
+    }
+
+    match /agentDailyLogs/{logId} {
+      // Per-user data + queries: listRecentAgentDailyLogs uses where('userEmail','==', lower(email)).
+      // Case-insensitive match avoids deny when token email casing differs from stored userEmail.
+      allow read: if gdprActorEmailLower() != '' && (
+        resource == null ||
+        (resource.data.userEmail is string &&
+          resource.data.userEmail.trim().lower() == gdprActorEmailLower())
+      );
+
+      allow create: if gdprActorEmailLower() != '' &&
+        request.resource.data.keys().hasAll(['userEmail', 'dayKey', 'items']) &&
+        request.resource.data.userEmail is string &&
+        request.resource.data.userEmail.trim().lower() == gdprActorEmailLower();
+
+      allow update: if gdprActorEmailLower() != '' &&
+        resource.data.userEmail is string &&
+        resource.data.userEmail.trim().lower() == gdprActorEmailLower() &&
+        request.resource.data.userEmail is string &&
+        request.resource.data.userEmail.trim().lower() == gdprActorEmailLower();
+
+      allow delete: if gdprActorEmailLower() != '' &&
+        resource.data.userEmail is string &&
+        resource.data.userEmail.trim().lower() == gdprActorEmailLower();
+    }
+
+    // Team absence / vacation calendar (read all team; write own rows only)
+    match /teamAbsences/{id} {
+      allow read: if gdprSignedIn();
+
+      allow create: if gdprActorEmailLower() != '' &&
+        request.resource.data.userEmail is string &&
+        request.resource.data.userEmail.trim().lower() == gdprActorEmailLower() &&
+        request.resource.data.keys().hasAll(['userEmail', 'startDate', 'endDate', 'kind', 'createdAt', 'updatedAt']);
+
+      allow update: if gdprActorEmailLower() != '' &&
+        resource.data.userEmail is string &&
+        resource.data.userEmail.trim().lower() == gdprActorEmailLower() &&
+        request.resource.data.userEmail is string &&
+        request.resource.data.userEmail.trim().lower() == gdprActorEmailLower();
+
+      allow delete: if gdprActorEmailLower() != '' &&
+        resource.data.userEmail is string &&
+        resource.data.userEmail.trim().lower() == gdprActorEmailLower();
+    }
+
+    // Shared team daily queue checklist (one doc per calendar day, doc id = dayKey YYYY-MM-DD)
+    match /agentDailyQueueLogs/{dayKey} {
+      allow read, write: if gdprSignedIn();
+    }
+
+    // Daily queue UI config (next-action links + checklist template). Read: all team; write: admins only.
+    match /dailyQueueSettings/{docId} {
+      allow read: if gdprSignedIn();
+      allow write: if gdprAdminActor();
     }
 
     match /marketDeepDive/{month} {

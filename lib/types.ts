@@ -473,6 +473,94 @@ export interface ActivityLogEntry {
   createdAt: Date;
 }
 
+/** Single check-off event for a checklist row (shared queue, same calendar day). */
+export interface AgentDailyCheckLogEntry {
+  userEmail: string;
+  displayName?: string;
+  at: Date;
+}
+
+/**
+ * One checklist row — template from Firestore `dailyQueueSettings/checklistTemplate` (fallback: defaults).
+ * Stored on shared `agentDailyQueueLogs/{dayKey}` (team queue) and legacy `agentDailyLogs`.
+ */
+export interface AgentDailyChecklistItem {
+  id: string;
+  label: string;
+  checked: boolean;
+  /** Link to SOP / Confluence section. */
+  docUrl?: string;
+  /** In-app path (e.g. `/board`) or external tool URL. */
+  toolUrl?: string;
+  /** Append-only log when someone sets the row to checked for the day. */
+  checkLog?: AgentDailyCheckLogEntry[];
+}
+
+/**
+ * Saved per signed-in user per calendar day (local date picker).
+ * Checklist template is seeded in the app; align with Confluence SOPs in `lib/operations/agentDailyChecklistSeed.ts`.
+ */
+export interface AgentDailyLog {
+  id: string;
+  dayKey: string;
+  userEmail: string;
+  displayName?: string;
+  items: AgentDailyChecklistItem[];
+  /** Shift / vacation / coverage (free text). */
+  rosterNotes?: string;
+  /** Optional end-of-day note. */
+  dayNote?: string;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+/** Shared team queue checklist for one calendar day (Firestore: `agentDailyQueueLogs/{dayKey}`). */
+export interface AgentDailyQueueLog {
+  id: string;
+  dayKey: string;
+  items: AgentDailyChecklistItem[];
+  rosterNotes?: string;
+  dayNote?: string;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+/** Admin-managed "What do you want to do next?" (`dailyQueueSettings/nextActions`). */
+export interface DailyNextActionConfig {
+  id: string;
+  title: string;
+  description: string;
+  href: string;
+  external?: boolean;
+  sortOrder: number;
+}
+
+/** Admin-managed checklist template row (`dailyQueueSettings/checklistTemplate`). */
+export interface DailyChecklistTemplateRow {
+  id: string;
+  label: string;
+  docUrl?: string;
+  toolUrl?: string;
+  sortOrder: number;
+}
+
+/** Firestore: `teamAbsences` — shared team leave / absence (shown on agent daily log). */
+export type TeamAbsenceKind = 'vacation' | 'sick' | 'training' | 'other';
+
+export interface TeamAbsence {
+  id: string;
+  userEmail: string;
+  displayName?: string;
+  /** Inclusive YYYY-MM-DD */
+  startDate: string;
+  /** Inclusive YYYY-MM-DD */
+  endDate: string;
+  kind: TeamAbsenceKind;
+  note?: string;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
 // ===== GDPR INCIDENT ASSISTANT (Art. 33 Data Breaches) =====
 
 export type IncidentStatus = 

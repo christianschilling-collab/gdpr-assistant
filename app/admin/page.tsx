@@ -6,14 +6,7 @@ import { useRouter } from 'next/navigation';
 import { useAuth } from '@/lib/contexts/AuthContext';
 import { HelpModal, HelpButton } from '@/components/HelpModal';
 import { HELP_CONTENT } from '@/lib/constants/helpContent';
-
-// Define admin email addresses
-const ADMIN_EMAILS = [
-  'christian.schilling@hellofresh.com',
-  'christian.schilling@ext.hellofresh.com',
-  'christian.schilling@hellofresh.de', // German domain
-  // Add more admin emails here
-];
+import { isGdprAssistantAdminEmail } from '@/lib/auth/gdprAssistantAdmins';
 
 export default function AdminDashboardPage() {
   const router = useRouter();
@@ -21,13 +14,6 @@ export default function AdminDashboardPage() {
   const [isAdmin, setIsAdmin] = useState(false);
   const [loading, setLoading] = useState(true);
   const [showHelp, setShowHelp] = useState(false);
-
-  // TEMPORARY FALLBACK: Check email directly
-  const ADMIN_EMAILS = [
-    'christian.schilling@hellofresh.com',
-    'christian.schilling@ext.hellofresh.com',
-    'christian.schilling@hellofresh.de',
-  ];
 
   useEffect(() => {
     // Check if user is logged in and is an admin
@@ -38,7 +24,7 @@ export default function AdminDashboardPage() {
     }
 
     // Check email directly (fallback if Firestore not set up)
-    if (user.email && ADMIN_EMAILS.includes(user.email)) {
+    if (user.email && isGdprAssistantAdminEmail(user.email)) {
       console.log('✅ Admin access granted by email:', user.email);
       setIsAdmin(true);
     } else {
@@ -160,6 +146,13 @@ export default function AdminDashboardPage() {
       icon: 'users',
       href: '/admin/users',
       color: 'blue',
+    },
+    {
+      title: 'Daily queue',
+      description: 'Agent daily log: next-action links and checklist template (Firestore)',
+      icon: 'clipboard',
+      href: '/admin/daily-queue',
+      color: 'green',
     },
     {
       title: 'Templates',
