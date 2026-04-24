@@ -331,6 +331,22 @@ service cloud.firestore {
       allow read, write: if gdprSignedIn();
     }
 
+    // ============================================
+    // TASK-FORCE MANAGEMENT (NEW)
+    // ============================================
+    
+    match /taskForceMembers/{id} {
+      allow read: if gdprSignedIn();
+      allow write: if gdprAdminActor() || 
+                     (gdprActorEmailLower() != '' && 
+                      exists(/databases/$(database)/documents/users/$(gdprActorEmailLower())) &&
+                      get(/databases/$(database)/documents/users/$(gdprActorEmailLower())).data.department == 'Legal');
+    }
+
+    match /incidentUpdates/{id} {
+      allow read, write: if gdprSignedIn();
+    }
+
     // GDPR "clusters" (org structure) — not aitrailblazers_clusters
     match /clusters/{clusterId} {
       allow read, write: if gdprSignedIn();

@@ -29,6 +29,47 @@ export interface RequesterType {
   createdBy?: string;
 }
 
+// ===== GDPR Incident Task-Force Management =====
+
+export interface TaskForce {
+  id: string;
+  name: string;              // "GDPR Incident Task-Force"
+  description: string;
+  isActive: boolean;
+  members: TaskForceMember[];
+  createdAt: Date;
+  updatedAt: Date;
+  createdBy?: string;
+}
+
+export interface TaskForceMember {
+  id: string;
+  name: string;
+  title: string;            // "Legal Lead", "Tech Lead", "DPO"
+  email: string;
+  department: string;       // "Legal", "Tech", "Compliance"
+  role: 'lead' | 'member' | 'specialist';
+  specialties: string[];    // ["Belgium GDPR", "Technical Assessment", "DPA Communication"]
+  markets: string[];        // ["DE", "AT", "CH", "BE", "FR", "SE", "DK", "NO"]
+  isActive: boolean;
+  createdAt: Date;
+  updatedAt: Date;
+  createdBy?: string;
+}
+
+export interface IncidentUpdate {
+  id: string;
+  incidentId: string;
+  timestamp: Date;
+  author: string;
+  authorName: string;       // Display name
+  type: 'status' | 'communication' | 'decision' | 'action' | 'note';
+  title: string;
+  content: string;
+  attachments?: string[];
+  visibility: 'internal' | 'task-force' | 'legal-only';
+}
+
 export interface HandoverNotes {
   summary: string;           // AI-generated or manual summary
   keyPoints: string[];       // Bullet points
@@ -614,7 +655,16 @@ export interface IncidentTask {
   incidentId: string;
   title: string;
   description?: string;
-  owner: string;                 // Team member email
+  
+  // Enhanced Assignee Support
+  owner: string;                 // Legacy: Team member email
+  assignedTo?: {
+    id: string;
+    name: string;                // "Chris", "Legal Team", "Tiphaine Legal"
+    email?: string;              // Optional for task-force members
+    type: 'user' | 'taskforce_member' | 'external';
+  };
+  
   dueDate?: Date;
   status: 'pending' | 'completed';
   priority?: 'High' | 'Medium' | 'Low';
@@ -624,6 +674,7 @@ export interface IncidentTask {
   }>;
   createdAt: Date;
   completedAt?: Date;
+  completedBy?: string;
 }
 
 export interface IncidentAuditLog {
@@ -712,5 +763,19 @@ export interface Incident {
   // Related data
   tasks?: IncidentTask[];          // Auto-generated tasks
   auditLog?: IncidentAuditLog[];   // Change history
+  
+  // Task-Force Coordination
+  assignedTaskForce?: {
+    taskForceId: string;
+    assignedMembers: string[];     // Selected TaskForceMember IDs
+    leadMember?: string;           // Primary contact ID
+    slackChannelId?: string;       // Manually linked Slack channel
+    slackChannelName?: string;     // Display name, e.g., "incident-2024-001-gdpr"
+    assignedAt: Date;
+    assignedBy: string;
+  };
+  
+  // Incident Updates/Protocol
+  updates?: IncidentUpdate[];
 }
 

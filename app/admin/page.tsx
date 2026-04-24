@@ -239,6 +239,13 @@ export default function AdminDashboardPage() {
       color: 'indigo',
     },
     {
+      title: 'Task-Force Management',
+      description: 'Manage GDPR incident response team members and market assignments',
+      icon: 'users',
+      href: '/admin/task-force',
+      color: 'red',
+    },
+    {
       title: 'Task Templates',
       description: 'Configure auto-generated tasks for incident phases',
       icon: 'clipboard',
