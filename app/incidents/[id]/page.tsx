@@ -37,6 +37,8 @@ import {
   generateIncidentCSV,
   downloadCSV,
 } from '@/lib/utils/exportIncident';
+import { ImpactAnalysisSection } from '@/components/incidents/ImpactAnalysisSection';
+import { formatIncidentScenarioLabelsEn, scenarioTagLabelEn } from '@/lib/constants/incidentScenarioTags';
 const STATUS_FLOW: IncidentStatus[] = [
   'Reporting',
   'Investigation',
@@ -380,6 +382,18 @@ export default function IncidentDetailPage() {
                 <h1 className="text-2xl font-bold text-gray-900 sm:text-3xl">
                   Incident {incident.incidentId}
                 </h1>
+                {incident.scenarioTags && incident.scenarioTags.length > 0 && (
+                  <div className="mt-3 flex flex-wrap gap-2">
+                    {incident.scenarioTags.map((tag) => (
+                      <span
+                        key={tag}
+                        className="inline-flex items-center rounded-full border border-amber-200 bg-amber-50 px-3 py-1 text-xs font-semibold text-amber-950"
+                      >
+                        {scenarioTagLabelEn(tag)}
+                      </span>
+                    ))}
+                  </div>
+                )}
                 <p className="text-gray-600 mt-1 text-sm sm:text-base">{incident.natureOfIncident}</p>
                 <p className="mt-2 text-sm text-gray-500">
                   Opened by{' '}
@@ -448,12 +462,16 @@ export default function IncidentDetailPage() {
               </div>
             </div>
             <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-4">
-              <div className="text-sm text-gray-600">Breach Type</div>
-              <div className="text-lg font-bold mt-1 text-gray-900">
-                {incident.breachTypes && incident.breachTypes.length > 0
-                  ? incident.breachTypes.map(type => type.replace('Loss of ', '')).join(', ')
-                  : incident.primaryLegalRisk?.replace('Loss of ', '') || 'Unknown'}
+              <div className="text-sm text-gray-600">Intake scenario</div>
+              <div className="text-lg font-bold mt-1 text-gray-900 leading-snug">
+                {formatIncidentScenarioLabelsEn(incident.scenarioTags) || '—'}
               </div>
+              {incident.breachTypes && incident.breachTypes.length > 0 && (
+                <div className="mt-2 text-xs text-gray-500">
+                  Legal (CIA):{' '}
+                  {incident.breachTypes.map((t) => t.replace('Loss of ', '')).join(', ')}
+                </div>
+              )}
             </div>
             <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-4">
               <div className="text-sm text-gray-600">Impacted Customers</div>
@@ -640,22 +658,31 @@ export default function IncidentDetailPage() {
                       </div>
                     </div>
                   )}
-                  {incident.breachTypes && incident.breachTypes.length > 0 && (
+                  {incident.affectedMarkets && incident.affectedMarkets.length > 0 && (
                     <div>
-                      <div className="text-sm font-medium text-gray-700">Breach characterisation</div>
-                      <div className="flex flex-wrap gap-2 mt-1">
-                        {incident.breachTypes.map((bt) => (
-                          <span key={bt} className="px-2 py-1 bg-red-50 text-red-900 rounded text-sm">
-                            {bt.replace('Loss of ', '')}
+                      <div className="text-sm font-medium text-gray-700">Affected markets / regions</div>
+                      <div className="mt-1 flex flex-wrap gap-2">
+                        {incident.affectedMarkets.map((m) => (
+                          <span key={m} className="rounded bg-slate-100 px-2 py-1 text-sm text-slate-800">
+                            {m}
                           </span>
                         ))}
                       </div>
-                      {incident.breachOtherDetails?.trim() && (
-                        <div className="mt-2 text-sm text-gray-700 whitespace-pre-wrap">
-                          <span className="font-medium text-gray-800">Other (details): </span>
-                          {incident.breachOtherDetails}
-                        </div>
-                      )}
+                    </div>
+                  )}
+                  {incident.scenarioTags && incident.scenarioTags.length > 0 && (
+                    <div>
+                      <div className="text-sm font-medium text-gray-700">Scenario (intake)</div>
+                      <div className="mt-1 flex flex-wrap gap-2">
+                        {incident.scenarioTags.map((tag) => (
+                          <span
+                            key={tag}
+                            className="rounded-full border border-amber-200 bg-amber-50 px-2 py-1 text-sm font-medium text-amber-950"
+                          >
+                            {scenarioTagLabelEn(tag)}
+                          </span>
+                        ))}
+                      </div>
                     </div>
                   )}
                   <div>
@@ -671,6 +698,12 @@ export default function IncidentDetailPage() {
                   </div>
                 </div>
               </div>
+
+              <ImpactAnalysisSection
+                incident={incident}
+                userEmail={userEmail}
+                onUpdated={loadIncidentData}
+              />
 
               {/* Investigation Fields (unlocked during Investigation phase) */}
               {(incident.status === 'Investigation' || 
@@ -1013,43 +1046,6 @@ export default function IncidentDetailPage() {
                   </div>
                 </div>
               )}
-
-              {/* Country Impact */}
-              <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
-                <h2 className="text-xl font-bold text-gray-900 mb-4">Country Impact</h2>
-                <div className="overflow-x-auto">
-                  <table className="min-w-full">
-                    <thead className="bg-gray-50">
-                      <tr>
-                        <th className="px-4 py-2 text-left text-xs font-medium text-gray-700">Country</th>
-                        <th className="px-4 py-2 text-left text-xs font-medium text-gray-700">Volume</th>
-                        <th className="px-4 py-2 text-left text-xs font-medium text-gray-700">Complaints</th>
-                        <th className="px-4 py-2 text-left text-xs font-medium text-gray-700">Risk</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {incident.countryImpact
-                        .filter(c => c.impactedVolume > 0 || c.complaintsReceived > 0)
-                        .map(country => (
-                        <tr key={country.country} className="border-t border-gray-200">
-                          <td className="px-4 py-2 font-medium">{country.country}</td>
-                          <td className="px-4 py-2">{country.impactedVolume.toLocaleString()}</td>
-                          <td className="px-4 py-2">{country.complaintsReceived}</td>
-                          <td className="px-4 py-2">
-                            <span className={`px-2 py-1 rounded-full text-xs font-semibold ${
-                              country.riskLevel === 'High' ? 'bg-red-100 text-red-800' :
-                              country.riskLevel === 'Medium' ? 'bg-yellow-100 text-yellow-800' :
-                              'bg-green-100 text-green-800'
-                            }`}>
-                              {country.riskLevel}
-                            </span>
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              </div>
             </div>
 
             {/* Right Column */}

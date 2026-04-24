@@ -15,6 +15,7 @@ import {
 } from '@/lib/board/assigneeEmailDirectory';
 import { GDPRCase, Incident } from '@/lib/types';
 import { Escalation, EscalationMarket } from '@/lib/types/escalations';
+import { formatIncidentScenarioLabelsEn } from '@/lib/constants/incidentScenarioTags';
 
 /** Same column template for header + rows — minmax(0,…) avoids overlap into neighbour columns */
 const BOARD_TABLE_GRID =
@@ -64,6 +65,18 @@ function caseMarketBuckets(c: GDPRCase): { label: string; buckets: MarketBucket[
 }
 
 function incidentMarketBuckets(i: Incident): { label: string; buckets: MarketBucket[] } {
+  if (i.affectedMarkets?.length) {
+    const buckets = [
+      ...new Set(i.affectedMarkets.map((m) => escalationMarketToBucket(m as EscalationMarket))),
+    ];
+    const order: MarketBucket[] = ['DACH', 'BNL', 'France', 'Nordics', 'Other'];
+    buckets.sort((a, b) => order.indexOf(a) - order.indexOf(b));
+    const label =
+      buckets.length === 1 && buckets[0] === 'Other'
+        ? i.affectedMarkets.join(', ')
+        : buckets.join(', ');
+    return { label, buckets };
+  }
   const countries = (i.countryImpact || []).map((x) => x.country);
   if (countries.length === 0) {
     return { label: '—', buckets: ['Other'] };
@@ -72,6 +85,12 @@ function incidentMarketBuckets(i: Incident): { label: string; buckets: MarketBuc
   const order: MarketBucket[] = ['DACH', 'BNL', 'France', 'Nordics', 'Other'];
   buckets.sort((a, b) => order.indexOf(a) - order.indexOf(b));
   return { label: buckets.join(', '), buckets };
+}
+
+function incidentBoardCategory(i: Incident): string {
+  const raw = formatIncidentScenarioLabelsEn(i.scenarioTags, 5);
+  if (!raw) return 'Data incident';
+  return raw.length > 58 ? `${raw.slice(0, 56)}…` : raw;
 }
 
 function escalationMarketBuckets(e: Escalation): { label: string; buckets: MarketBucket[] } {
@@ -184,7 +203,7 @@ export default function CommandCenterPage() {
             id: i.id,
             type: 'incident' as const,
             itemId: i.incidentId,
-            category: 'Data Breach',
+            category: incidentBoardCategory(i),
             subject: i.natureOfIncident,
             owner: assigneeDir.toEmail((i.assignedTo || i.createdBy || '').trim()),
             marketLabel: label,
@@ -677,7 +696,7 @@ const TrackboardRow = memo(function TrackboardRow({ item, urgency }: TrackboardR
     'bg-green-500';
   
   const typeBadgeColor =
-    item.category === 'Data Breach'
+    item.type === 'incident'
       ? 'bg-red-600'
       : looksLikeSar
         ? 'bg-blue-600'

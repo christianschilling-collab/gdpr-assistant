@@ -9,6 +9,7 @@ import { Incident } from '@/lib/types';
 import { Escalation } from '@/lib/types/escalations';
 import ErrorBoundary from '@/components/ErrorBoundary';
 import { ShieldExclamationIcon, ExclamationTriangleIcon, ChatBubbleLeftRightIcon } from '@heroicons/react/24/outline';
+import { formatIncidentScenarioLabelsEn } from '@/lib/constants/incidentScenarioTags';
 import { BoardView } from '@/components/BoardView';
 import { useAuth } from '@/lib/contexts/AuthContext';
 
@@ -305,6 +306,11 @@ function IncidentRow({ incident }: { incident: Incident }) {
       {/* Middle: Description */}
       <div className="flex-1 min-w-0">
         <p className="text-gray-900 font-medium truncate">{incident.natureOfIncident}</p>
+        {formatIncidentScenarioLabelsEn(incident.scenarioTags) && (
+          <p className="mt-1 truncate text-xs font-medium text-amber-900">
+            {formatIncidentScenarioLabelsEn(incident.scenarioTags)}
+          </p>
+        )}
         <p className="text-sm text-gray-600 mt-1">
           {incident.affectedSystems.slice(0, 2).join(', ')}
           {incident.affectedSystems.length > 2 && ` +${incident.affectedSystems.length - 2} more`}
@@ -314,7 +320,9 @@ function IncidentRow({ incident }: { incident: Incident }) {
       {/* Right: Stats */}
       <div className="flex items-center gap-6 text-sm">
         <div className="text-right">
-          <div className="font-semibold text-gray-900">{incident.totalImpacted.toLocaleString()}</div>
+          <div className="font-semibold text-gray-900">
+            {(incident.totalImpacted ?? 0).toLocaleString()}
+          </div>
           <div className="text-gray-600">impacted</div>
         </div>
         <div className="text-right min-w-[100px]">

@@ -23,7 +23,9 @@ import {
   IncidentAuditLog,
   IncidentStatus,
   CountryImpact,
+  IncidentScenarioTagId,
 } from '../types';
+import { isIncidentScenarioTagId } from '../constants/incidentScenarioTags';
 
 const INCIDENTS_COLLECTION = 'incidents';
 const TASKS_COLLECTION = 'incidentTasks';
@@ -82,6 +84,10 @@ function docToIncident(data: DocumentData): Incident {
     additionalDescription: data.additionalDescription,
     affectedSystems: data.affectedSystems || [],
     dataCategories: data.dataCategories || [],
+    affectedMarkets: Array.isArray(data.affectedMarkets) ? data.affectedMarkets : undefined,
+    scenarioTags: Array.isArray(data.scenarioTags)
+      ? (data.scenarioTags.filter((x: unknown) => typeof x === 'string' && isIncidentScenarioTagId(x)) as IncidentScenarioTagId[])
+      : undefined,
     breachTypes: data.breachTypes,
     breachOtherDetails: data.breachOtherDetails,
     impactPeriod: {

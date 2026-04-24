@@ -2,7 +2,9 @@
 
 import { useState } from 'react';
 import Link from 'next/link';
-import { GDPRCase, Incident, Escalation } from '@/lib/types';
+import { GDPRCase, Incident } from '@/lib/types';
+import type { Escalation } from '@/lib/types/escalations';
+import { formatIncidentScenarioLabelsEn } from '@/lib/constants/incidentScenarioTags';
 
 type BoardItem = 
   | { type: 'case'; data: GDPRCase; id: string; }
@@ -204,6 +206,11 @@ interface BoardCardProps {
 }
 
 function incidentMarketLabel(incident: Incident): string {
+  if (incident.affectedMarkets?.length) {
+    const m = incident.affectedMarkets;
+    if (m.length <= 3) return m.join(', ');
+    return `${m.slice(0, 2).join(', ')} +${m.length - 2}`;
+  }
   const codes = (incident.countryImpact || [])
     .filter((c) => c.impactedVolume > 0 || c.complaintsReceived > 0)
     .map((c) => c.country);
@@ -251,8 +258,11 @@ function BoardCard({ item, onDragStart }: BoardCardProps) {
   
   const category = 
     item.type === 'case' ? (item.data.primaryCategory || 'Uncategorized') :
-    item.type === 'incident' ? item.data.affectedSystems[0] :
-    item.data.subject;
+    item.type === 'incident'
+      ? formatIncidentScenarioLabelsEn(item.data.scenarioTags, 4) ||
+        item.data.affectedSystems[0] ||
+        'Incident'
+    : item.data.subject;
   
   // Type colors
   const borderColor = 

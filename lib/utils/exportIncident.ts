@@ -1,4 +1,12 @@
 import { Incident, IncidentTask, IncidentAuditLog } from '@/lib/types';
+import { formatIncidentScenarioLabelsEn } from '@/lib/constants/incidentScenarioTags';
+
+function notificationDecisionLabel(v: Incident['notificationDecision']): string {
+  if (!v) return '';
+  if (v === 'notify_authority') return 'Supervisory authority must be notified';
+  if (v === 'no_action') return 'No authority notification required';
+  return 'Under review';
+}
 
 /**
  * Generate CSV export for incident (technical backup)
@@ -37,7 +45,14 @@ export function generateIncidentCSV(
   rows.push(['Status', incident.status]);
   rows.push(['Risk Level', incident.riskAssessment || 'Not assessed']);
   rows.push([
-    'Breach characterisation',
+    'Intake scenario',
+    formatIncidentScenarioLabelsEn(incident.scenarioTags) || 'Not specified',
+  ]);
+  if (incident.affectedMarkets?.length) {
+    rows.push(['Affected markets / regions', incident.affectedMarkets.join('; ')]);
+  }
+  rows.push([
+    'Legal breach characterisation (CIA)',
     incident.breachTypes?.length
       ? incident.breachTypes.join('; ')
       : incident.primaryLegalRisk || 'Not specified',
@@ -57,6 +72,12 @@ export function generateIncidentCSV(
   rows.push(['Impact Start', formatDate(incident.impactPeriod.start)]);
   rows.push(['Impact End', incident.impactPeriod.end ? formatDate(incident.impactPeriod.end) : 'Ongoing']);
   rows.push(['Total Impacted', (incident.totalImpacted ?? 0).toString()]);
+  if (incident.notificationDecision) {
+    rows.push(['Authority notification decision', notificationDecisionLabel(incident.notificationDecision)]);
+  }
+  if (incident.legalReasoning?.trim()) {
+    rows.push(['Legal reasoning (notification)', cleanText(incident.legalReasoning)]);
+  }
   rows.push(['Notification Deadline', incident.notificationDeadline ? formatDate(incident.notificationDeadline) : 'N/A']);
   rows.push(['Created By', incident.createdBy]);
   rows.push(['Created At', formatDate(incident.createdAt)]);
@@ -262,24 +283,41 @@ export async function generateIncidentPDF(
     doc.setTextColor(...darkGray);
     doc.setFontSize(11);
     doc.setFont('helvetica', 'normal');
-    doc.text(`Breach: `, breachTypeX, yPos);
+    doc.text(`Intake: `, breachTypeX, yPos);
 
-    const breachLabel =
-      incident.breachTypes?.length
-        ? incident.breachTypes.map((b) => b.replace('Loss of ', '')).join(', ')
-        : incident.primaryLegalRisk || '';
-    if (breachLabel) {
+    const intakeLabel = formatIncidentScenarioLabelsEn(incident.scenarioTags);
+    if (intakeLabel) {
       doc.setTextColor(...darkGray);
       doc.setFont('helvetica', 'bold');
       const truncated =
-        breachLabel.length > 42 ? `${breachLabel.slice(0, 40)}…` : breachLabel;
+        intakeLabel.length > 42 ? `${intakeLabel.slice(0, 40)}…` : intakeLabel;
       doc.text(truncated, breachTypeX + 22, yPos);
     } else {
       doc.setTextColor(...darkGray);
       doc.setFont('helvetica', 'normal');
       doc.text('Not specified', breachTypeX + 22, yPos);
     }
-    
+
+    yPos += 10;
+    doc.setTextColor(...darkGray);
+    doc.setFontSize(11);
+    doc.setFont('helvetica', 'normal');
+    doc.text(`Legal (CIA): `, breachTypeX, yPos);
+    const breachLabel =
+      incident.breachTypes?.length
+        ? incident.breachTypes.map((b) => b.replace('Loss of ', '')).join(', ')
+        : incident.primaryLegalRisk || '';
+    doc.setFont('helvetica', 'bold');
+    doc.text(
+      breachLabel
+        ? breachLabel.length > 48
+          ? `${breachLabel.slice(0, 46)}…`
+          : breachLabel
+        : 'Not recorded',
+      breachTypeX + 32,
+      yPos
+    );
+
     yPos += 10;
     
     // Executive Summary Section
@@ -301,8 +339,26 @@ export async function generateIncidentPDF(
     if (incident.additionalDescription?.trim()) {
       summaryItems.push(['Further details (intake)', incident.additionalDescription.trim()]);
     }
+    if (incident.affectedMarkets?.length) {
+      summaryItems.push(['Affected markets / regions', incident.affectedMarkets.join(', ')]);
+    }
+    if (formatIncidentScenarioLabelsEn(incident.scenarioTags)) {
+      summaryItems.push([
+        'Intake scenario',
+        formatIncidentScenarioLabelsEn(incident.scenarioTags),
+      ]);
+    }
     if (incident.breachOtherDetails?.trim()) {
       summaryItems.push(['Breach “other” details', incident.breachOtherDetails.trim()]);
+    }
+    if (incident.notificationDecision) {
+      summaryItems.push([
+        'Authority notification decision',
+        notificationDecisionLabel(incident.notificationDecision),
+      ]);
+    }
+    if (incident.legalReasoning?.trim()) {
+      summaryItems.push(['Legal reasoning', incident.legalReasoning.trim()]);
     }
     summaryItems.push(
       ['Affected Systems', incident.affectedSystems?.length > 0 ? incident.affectedSystems.join(', ') : 'None specified'],

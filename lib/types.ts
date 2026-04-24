@@ -585,6 +585,18 @@ export type NotificationDecision =
   | 'no_action'           // No notification required
   | 'under_review';       // Still evaluating
 
+/** Intake “what happened” keywords (labels in `lib/constants/incidentScenarioTags.ts`). */
+export type IncidentScenarioTagId =
+  | 'unintended_disclosure'
+  | 'data_leak'
+  | 'third_party_access'
+  | 'technical_error'
+  | 'misconfiguration'
+  | 'lost_stolen_device'
+  | 'ransomware_malware'
+  | 'insider_threat'
+  | 'other_mixed';
+
 export type IncidentCountry = 
   | 'BE' | 'LU' | 'NL' | 'FR'           // BNL + France
   | 'DE' | 'AT' | 'CH'                  // DACH
@@ -637,6 +649,10 @@ export interface Incident {
   additionalDescription?: string;
   affectedSystems: string[];    // Multi-select: CRM, Payment, Email, etc.
   dataCategories: string[];     // Multi-select: Contact Data, Financial Data, etc.
+  /** Markets / regions (or “EU-wide”) selected at intake. */
+  affectedMarkets?: string[];
+  /** Intake scenario tags — shown on detail header and board/list badges. */
+  scenarioTags?: IncidentScenarioTagId[];
   impactPeriod: {
     start: Date;
     end?: Date;
