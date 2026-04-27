@@ -16,6 +16,12 @@ interface AuthContextType {
   accessNotice: string | null;
   clearAccessNotice: () => void;
   refreshUserProfile: () => Promise<void>;
+  
+  // User Switching for Admin Testing
+  isImpersonating: boolean;
+  originalUser: UserProfile | null;
+  switchToUser: (email: string) => Promise<void>;
+  switchBackToOriginal: () => void;
 }
 
 const AuthContext = createContext<AuthContextType>({
@@ -28,6 +34,12 @@ const AuthContext = createContext<AuthContextType>({
   accessNotice: null,
   clearAccessNotice: () => {},
   refreshUserProfile: async () => {},
+  
+  // User Switching defaults
+  isImpersonating: false,
+  originalUser: null,
+  switchToUser: async () => {},
+  switchBackToOriginal: () => {},
 });
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
@@ -35,8 +47,64 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [userProfile, setUserProfile] = useState<UserProfile | null>(null);
   const [loading, setLoading] = useState(true);
   const [accessNotice, setAccessNotice] = useState<string | null>(null);
+  
+  // User Switching State
+  const [originalUser, setOriginalUser] = useState<UserProfile | null>(null);
+  const [isImpersonating, setIsImpersonating] = useState(false);
 
   const clearAccessNotice = () => setAccessNotice(null);
+
+  // User Switching Functions (Only for christian.schilling@hellofresh.de)
+  const switchToUser = async (email: string) => {
+    if (!user?.email || user.email !== 'christian.schilling@hellofresh.de') {
+      console.warn('User switching only allowed for christian.schilling@hellofresh.de');
+      return;
+    }
+    
+    try {
+      const targetProfile = await getUserProfile(email);
+      if (targetProfile) {
+        // Save original user if not already impersonating
+        if (!isImpersonating && userProfile) {
+          setOriginalUser(userProfile);
+        }
+        
+        setUserProfile(targetProfile);
+        setIsImpersonating(true);
+        
+        // Save to sessionStorage for persistence across page reloads
+        sessionStorage.setItem('impersonatedUser', email);
+        if (!sessionStorage.getItem('originalUser')) {
+          sessionStorage.setItem('originalUser', JSON.stringify(userProfile));
+        }
+        
+        console.log(`🔄 Switched to user: ${targetProfile.displayName || targetProfile.email} (${targetProfile.role})`);
+      } else {
+        alert(`User ${email} not found`);
+      }
+    } catch (error) {
+      console.error('Error switching user:', error);
+      alert('Error switching user');
+    }
+  };
+  
+  const switchBackToOriginal = () => {
+    if (!user?.email || user.email !== 'christian.schilling@hellofresh.de') {
+      return;
+    }
+    
+    if (originalUser) {
+      setUserProfile(originalUser);
+      setIsImpersonating(false);
+      setOriginalUser(null);
+      
+      // Clear sessionStorage
+      sessionStorage.removeItem('impersonatedUser');
+      sessionStorage.removeItem('originalUser');
+      
+      console.log('🔙 Switched back to original user');
+    }
+  };
 
   async function loadUserProfile(firebaseUser: User) {
     try {
@@ -45,9 +113,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         console.log('🔍 Development check:', process.env.NODE_ENV === 'development');
         
         // TEMPORARY DEV MODE: Skip user profile check to unblock work
-        if (process.env.NODE_ENV === 'development') {
+        if (process.env.NODE_ENV === 'development' || process.env.NEXT_PUBLIC_DEV_MODE === 'true') {
           console.log('🔓 DEV MODE: Creating temporary admin profile');
-          const tempProfile = {
+          const tempProfile: UserProfile = {
+            id: firebaseUser.email,
             email: firebaseUser.email,
             role: 'admin' as UserRole,
             displayName: firebaseUser.displayName || firebaseUser.email,
@@ -68,6 +137,29 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           console.log('✅ User profile loaded:', profile);
           setAccessNotice(null);
           setUserProfile(profile);
+
+          // Check for impersonation in session (for christian.schilling@hellofresh.de)
+          if (firebaseUser.email === 'christian.schilling@hellofresh.de') {
+            const impersonatedEmail = sessionStorage.getItem('impersonatedUser');
+            const originalUserData = sessionStorage.getItem('originalUser');
+            
+            if (impersonatedEmail && originalUserData) {
+              try {
+                const impersonatedProfile = await getUserProfile(impersonatedEmail);
+                if (impersonatedProfile) {
+                  setOriginalUser(JSON.parse(originalUserData));
+                  setUserProfile(impersonatedProfile);
+                  setIsImpersonating(true);
+                  console.log(`🔄 Restored impersonation: ${impersonatedProfile.displayName || impersonatedProfile.email}`);
+                }
+              } catch (error) {
+                console.error('Error restoring impersonation:', error);
+                // Clean up invalid session data
+                sessionStorage.removeItem('impersonatedUser');
+                sessionStorage.removeItem('originalUser');
+              }
+            }
+          }
 
           // Best-effort last login (must not block or undo profile on failure)
           try {
@@ -179,6 +271,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         accessNotice,
         clearAccessNotice,
         refreshUserProfile,
+        
+        // User Switching
+        isImpersonating,
+        originalUser,
+        switchToUser,
+        switchBackToOriginal,
       }}
     >
       {children}

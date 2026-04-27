@@ -1,486 +1,461 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { useAuth } from '@/lib/contexts/AuthContext';
-import {
-  getAllUsers,
-  updateUserRole,
-  updateUserAssigneeAliases,
-  activateUser,
-  deactivateUser,
-  UserProfile,
-  UserRole,
-} from '@/lib/firebase/users';
-import { useToast } from '@/lib/contexts/ToastContext';
-
-// TEMPORARY FALLBACK: Admin emails
-const ADMIN_EMAILS = [
-  'christian.schilling@hellofresh.com',
-  'christian.schilling@ext.hellofresh.com',
-  'christian.schilling@hellofresh.de',
-];
-
-const ROLE_ORDER: Record<UserRole, number> = {
-  admin: 0,
-  team_lead: 1,
-  legal: 2,
-  agent: 3,
-};
-
-function userRoleLabel(role: UserRole): string {
-  switch (role) {
-    case 'admin':
-      return 'Admin';
-    case 'team_lead':
-      return 'Team lead';
-    case 'legal':
-      return 'Legal';
-    case 'agent':
-      return 'Agent';
-    default:
-      return role;
-  }
-}
+import { isGdprAssistantAdminEmail } from '@/lib/auth/gdprAssistantAdmins';
+import { getAllUsers, createOrUpdateUserProfile, updateUserRole, deactivateUser, activateUser, deleteUserProfile } from '@/lib/firebase/users';
+import type { UserProfile, UserRole } from '@/lib/firebase/users';
 
 export default function UserManagementPage() {
   const router = useRouter();
-  const { user, isAdmin, loading: authLoading } = useAuth();
-  const { addToast } = useToast();
-  
+  const { user } = useAuth();
   const [users, setUsers] = useState<UserProfile[]>([]);
   const [loading, setLoading] = useState(true);
-  const [updating, setUpdating] = useState<string | null>(null);
-  
-  // Add User Modal State
-  const [showAddUserModal, setShowAddUserModal] = useState(false);
-  const [newUserEmail, setNewUserEmail] = useState('');
-  const [newUserRole, setNewUserRole] = useState<UserRole>('agent');
-  const [newUserDisplayName, setNewUserDisplayName] = useState('');
-  const [addingUser, setAddingUser] = useState(false);
-  /** Comma-separated alias drafts keyed by user email (trackboard assignee resolution). */
-  const [aliasDraftByEmail, setAliasDraftByEmail] = useState<Record<string, string>>({});
+  const [showCreateModal, setShowCreateModal] = useState(false);
+  const [editingUser, setEditingUser] = useState<UserProfile | null>(null);
+  const [newUserData, setNewUserData] = useState({
+    email: '',
+    displayName: '',
+    role: 'agent' as UserRole,
+    department: '',
+    market: ''
+  });
 
-  // Check if user is admin by email (fallback)
-  const isAdminByEmail = user?.email && ADMIN_EMAILS.includes(user.email);
-  const hasAdminAccess = isAdmin || isAdminByEmail;
+  // Predefined team structure
+  const TEAM_ROLES = [
+    { value: 'admin', label: 'Admin', description: 'Full system access, can manage all users' },
+    { value: 'team_lead', label: 'Team Lead', description: 'Manage team members, view reports' },
+    { value: 'legal', label: 'Legal Expert', description: 'Legal review, escalations, compliance' },
+    { value: 'agent', label: 'Agent', description: 'Handle cases, basic access' }
+  ] as const;
+
+  const DEPARTMENTS = [
+    'Legal',
+    'Customer Care', 
+    'Compliance',
+    'IT',
+    'Management'
+  ];
+
+  const MARKETS = [
+    'DACH',
+    'France', 
+    'NORDICS',
+    'BENELUX',
+    'ALL'
+  ];
 
   useEffect(() => {
-    console.log('🔍 User Management - Auth Check:');
-    console.log('  - authLoading:', authLoading);
-    console.log('  - user:', user?.email);
-    console.log('  - isAdmin:', isAdmin);
-    console.log('  - isAdminByEmail:', isAdminByEmail);
-    console.log('  - hasAdminAccess:', hasAdminAccess);
-
-    if (!authLoading) {
-      if (!user) {
-        console.log('❌ No user, redirecting to /');
-        router.push('/');
-        return;
-      }
-      if (!hasAdminAccess) {
-        console.log('❌ Not admin, redirecting to /cases');
-        router.push('/cases');
-        return;
-      }
-      console.log('✅ Loading users...');
-      loadUsers();
+    if (!user?.email || !isGdprAssistantAdminEmail(user.email)) {
+      router.push('/cases');
+      return;
     }
-  }, [user, isAdmin, authLoading, router, hasAdminAccess, isAdminByEmail]);
+    loadUsers();
+  }, [user, router]);
 
-  async function loadUsers() {
+  const loadUsers = async () => {
     try {
-      setLoading(true);
-      
-      // For local dev without Firestore Rules: Generate user list from ADMIN_EMAILS
-      const mockUsers: UserProfile[] = ADMIN_EMAILS.map((email) => ({
-        id: email,
-        email,
-        role: 'admin' as UserRole,
-        displayName: email.split('@')[0],
-        createdAt: new Date(),
-        lastLoginAt: new Date(),
-        isActive: true,
-      }));
-      
-      // Try to load from Firestore (will fail if rules not deployed)
-      try {
-        const allUsers = await getAllUsers();
-        // If successful, use Firestore data
-        allUsers.sort((a, b) => {
-          const ra = ROLE_ORDER[a.role] ?? 9;
-          const rb = ROLE_ORDER[b.role] ?? 9;
-          if (ra !== rb) return ra - rb;
-          return a.email.localeCompare(b.email);
-        });
-        setUsers(allUsers);
-        const drafts: Record<string, string> = {};
-        for (const u of allUsers) {
-          drafts[u.email] = (u.assigneeAliases ?? []).join(', ');
-        }
-        setAliasDraftByEmail(drafts);
-        console.log('✅ Users loaded from Firestore');
-      } catch (firestoreError) {
-        // Fallback to mock data for local dev
-        console.warn('⚠️ Firestore Rules not deployed, using local admin list');
-        setUsers(mockUsers);
-      }
-    } catch (error: any) {
+      const allUsers = await getAllUsers();
+      setUsers(allUsers);
+    } catch (error) {
       console.error('Error loading users:', error);
-      addToast(error.message || 'Failed to load users', 'error');
     } finally {
       setLoading(false);
     }
-  }
+  };
 
-  async function handleRoleChange(email: string, newRole: UserRole) {
+  const handleCreateUser = async () => {
+    if (!newUserData.email) return;
+    
     try {
-      setUpdating(email);
-      await updateUserRole(email, newRole);
-      addToast(`User role updated to ${newRole}`, 'success');
-      await loadUsers();
-    } catch (error: any) {
-      console.error('Error updating role:', error);
-      addToast(error.message || 'Failed to update role', 'error');
-    } finally {
-      setUpdating(null);
-    }
-  }
-
-  async function handleToggleActive(email: string, currentStatus: boolean) {
-    try {
-      setUpdating(email);
-      if (currentStatus) {
-        await deactivateUser(email);
-        addToast('User deactivated', 'success');
-      } else {
-        await activateUser(email);
-        addToast('User activated', 'success');
+      await createOrUpdateUserProfile(newUserData.email, newUserData.displayName);
+      
+      // Update with additional fields
+      if (newUserData.role !== 'agent') {
+        await updateUserRole(newUserData.email, newUserData.role);
       }
-      await loadUsers();
-    } catch (error: any) {
-      console.error('Error toggling user status:', error);
-      addToast(error.message || 'Failed to update user status', 'error');
-    } finally {
-      setUpdating(null);
+      
+      setShowCreateModal(false);
+      setNewUserData({ email: '', displayName: '', role: 'agent', department: '', market: '' });
+      loadUsers();
+    } catch (error) {
+      console.error('Error creating user:', error);
+      alert('Error creating user. Check console for details.');
     }
-  }
+  };
 
-  async function handleSaveAliases(email: string) {
-    const raw = aliasDraftByEmail[email] ?? '';
-    const parts = raw
-      .split(',')
-      .map((s) => s.trim())
-      .filter(Boolean);
+  const handleUpdateUser = async (userId: string, updates: Partial<UserProfile>) => {
     try {
-      setUpdating(email);
-      await updateUserAssigneeAliases(email, parts);
-      addToast('Trackboard aliases saved.', 'success');
-      await loadUsers();
-    } catch (error: any) {
-      console.error('Error saving aliases:', error);
-      addToast(error.message || 'Failed to save aliases', 'error');
-    } finally {
-      setUpdating(null);
+      if (updates.role) {
+        await updateUserRole(userId, updates.role);
+      }
+      loadUsers();
+    } catch (error) {
+      console.error('Error updating user:', error);
+      alert('Error updating user. Check console for details.');
     }
-  }
+  };
 
-  async function handleAddUser() {
-    if (!newUserEmail || !newUserEmail.includes('@')) {
-      addToast('Please enter a valid email address', 'error');
+  const handleToggleActive = async (userId: string, isActive: boolean) => {
+    try {
+      if (isActive) {
+        await activateUser(userId);
+      } else {
+        await deactivateUser(userId);
+      }
+      loadUsers();
+    } catch (error) {
+      console.error('Error toggling user status:', error);
+    }
+  };
+
+  const handleDeleteUser = async (userId: string, userDisplayName?: string) => {
+    const userName = userDisplayName || userId;
+    if (!confirm(`Are you sure you want to DELETE user "${userName}"?\n\nThis action cannot be undone and will:\n- Remove the user from the system\n- Delete all their data\n- Cancel any ongoing onboarding\n\nType 'DELETE' if you're sure.`)) {
+      return;
+    }
+
+    const confirmation = prompt(`To confirm deletion of "${userName}", type 'DELETE' (all caps):`);
+    if (confirmation !== 'DELETE') {
+      alert('Deletion cancelled. You must type exactly "DELETE" to confirm.');
       return;
     }
 
     try {
-      setAddingUser(true);
+      await deleteUserProfile(userId);
+      loadUsers();
       
-      // Add user to Firestore
-      const { addNewUser } = await import('@/lib/firebase/addUser');
-      await addNewUser(newUserEmail, newUserRole, newUserDisplayName || undefined);
-      
-      addToast(`User ${newUserEmail} added successfully!`, 'success');
-      
-      // Reset form and close modal
-      setNewUserEmail('');
-      setNewUserRole('agent');
-      setNewUserDisplayName('');
-      setShowAddUserModal(false);
-      
-      // Reload users list
-      await loadUsers();
-    } catch (error: any) {
-      console.error('Error adding user:', error);
-      addToast(error.message || 'Failed to add user', 'error');
-    } finally {
-      setAddingUser(false);
+      // Show success toast
+      const toast = document.createElement('div');
+      toast.className = 'fixed top-4 right-4 bg-red-600 text-white px-6 py-3 rounded-lg shadow-lg z-50';
+      toast.innerHTML = `<div class="flex items-center gap-2"><span>🗑️</span><span>User "${userName}" deleted successfully</span></div>`;
+      document.body.appendChild(toast);
+      setTimeout(() => document.body.removeChild(toast), 4000);
+    } catch (error) {
+      console.error('Error deleting user:', error);
+      alert('Error deleting user: ' + (error as Error).message);
     }
-  }
+  };
 
-  if (authLoading || loading) {
+  const handleEditUser = () => {
+    // Future: Could add inline editing or extended modal
+    // For now, users can use the table controls
+  };
+
+  const getRoleColor = (role: UserRole) => {
+    switch (role) {
+      case 'admin': return 'bg-red-100 text-red-800';
+      case 'team_lead': return 'bg-blue-100 text-blue-800';
+      case 'legal': return 'bg-purple-100 text-purple-800';
+      case 'agent': return 'bg-green-100 text-green-800';
+      default: return 'bg-gray-100 text-gray-800';
+    }
+  };
+
+  if (loading) {
     return (
       <div className="min-h-screen bg-gray-50 flex items-center justify-center">
-        <div className="text-gray-500">Loading...</div>
+        <div className="text-gray-500">Loading users...</div>
       </div>
     );
   }
 
-  if (!hasAdminAccess) {
-    return null; // Redirect handled in useEffect
-  }
-
   return (
-    <div className="min-h-screen bg-gradient-to-br from-gray-50 to-gray-100 p-8">
-      <div className="max-w-6xl mx-auto">
+    <div className="min-h-screen bg-gray-50 p-8">
+      <div className="max-w-7xl mx-auto">
         {/* Header */}
         <div className="mb-8">
-          <Link
-            href="/admin"
-            className="text-blue-600 hover:text-blue-700 text-sm mb-4 inline-block"
-          >
-            ← Back to Admin Dashboard
-          </Link>
           <div className="flex items-center justify-between">
-            <div className="flex items-center gap-3 mb-2">
-              <span className="text-4xl">👥</span>
-              <div>
-                <h1 className="text-3xl font-bold text-gray-900">User Management</h1>
-                <p className="text-gray-600 mt-1">Manage user roles and access permissions</p>
-              </div>
+            <div>
+              <h1 className="text-3xl font-bold text-gray-900">GDPR Team User Management</h1>
+              <p className="text-gray-600 mt-1">Configure team members BEFORE their first login</p>
             </div>
             <button
-              onClick={() => setShowAddUserModal(true)}
-              className="px-4 py-2 bg-gray-400 text-white rounded-lg font-medium cursor-not-allowed opacity-60"
-              disabled
-              title="Available in production with Firestore Rules"
+              onClick={() => setShowCreateModal(true)}
+              className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 font-medium"
             >
-              + Add User (Production Only)
+              Add Team Member
             </button>
           </div>
         </div>
 
-        {/* Info Box */}
-        <div className="bg-blue-50 border border-blue-200 rounded-lg p-4 mb-6">
-          <h3 className="font-semibold text-blue-900 mb-2">ℹ️ Local Development Mode</h3>
-          <ul className="text-sm text-blue-800 space-y-1">
-            <li><strong>Current Status:</strong> Using email-based authentication (no Firestore Rules required)</li>
-            <li><strong>Admin Access:</strong> Defined in code via ADMIN_EMAILS array</li>
-            <li><strong>Add New Admins:</strong> Edit ADMIN_EMAILS in Navigation.tsx, AuthGuard.tsx, admin/page.tsx, and admin/users/page.tsx</li>
-            <li><strong>Production:</strong> Will migrate to Firestore-based user management with proper Rules</li>
-            <li>
-              <strong>Roles:</strong> <code className="rounded bg-blue-100 px-1">agent</code> opens the case list after
-              login; <code className="rounded bg-blue-100 px-1">admin</code>, <code className="rounded bg-blue-100 px-1">team_lead</code>, and{' '}
-              <code className="rounded bg-blue-100 px-1">legal</code> open the tracking board.
-            </li>
-          </ul>
+        {/* Team Structure Overview */}
+        <div className="bg-white rounded-lg shadow-sm border mb-8">
+          <div className="px-6 py-4 border-b">
+            <h2 className="text-xl font-bold text-gray-900">Team Roles & Permissions</h2>
+          </div>
+          <div className="p-6">
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+              {TEAM_ROLES.map((role) => (
+                <div key={role.value} className="border rounded-lg p-4">
+                  <div className={`inline-block px-2 py-1 rounded text-sm font-medium mb-2 ${getRoleColor(role.value)}`}>
+                    {role.label}
+                  </div>
+                  <p className="text-sm text-gray-600">{role.description}</p>
+                  <div className="text-xs text-gray-500 mt-2">
+                    Count: {users.filter(u => u.role === role.value).length}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
         </div>
 
-        {/* Users Table */}
-        <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
-          <div className="px-6 py-4 bg-gray-50 border-b border-gray-200">
-            <h2 className="text-lg font-bold text-gray-900">Current Admins</h2>
-            <p className="text-sm text-gray-600 mt-1">Configured via ADMIN_EMAILS in code</p>
+        {/* User List */}
+        <div className="bg-white rounded-lg shadow-sm border">
+          <div className="px-6 py-4 border-b">
+            <h2 className="text-xl font-bold text-gray-900">Team Members ({users.length})</h2>
           </div>
-          <table className="w-full">
-            <thead className="bg-gray-50 border-b border-gray-200">
-              <tr>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                  User
-                </th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider min-w-[200px] max-w-md">
-                  Trackboard aliases
-                </th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                  Role
-                </th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                  Status
-                </th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                  Last Login
-                </th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                  Actions
-                </th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-gray-200">
-              {users.map((userProfile) => (
-                <tr key={userProfile.email} className={!userProfile.isActive ? 'bg-gray-50 opacity-60' : ''}>
-                  <td className="px-6 py-4 whitespace-nowrap">
-                    <div className="flex items-center">
+          <div className="overflow-x-auto">
+            <table className="w-full">
+              <thead className="bg-gray-50">
+                <tr>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">User</th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Role</th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Status</th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Last Login</th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Actions</th>
+                </tr>
+              </thead>
+              <tbody className="bg-white divide-y divide-gray-200">
+                {users.map((user) => (
+                  <tr key={user.id} className="hover:bg-gray-50">
+                    <td className="px-6 py-4 whitespace-nowrap">
                       <div>
                         <div className="text-sm font-medium text-gray-900">
-                          {userProfile.displayName || userProfile.email.split('@')[0]}
+                          {user.displayName || 'No name'}
                         </div>
-                        <div className="text-sm text-gray-500">{userProfile.email}</div>
+                        <div className="text-sm text-gray-500">{user.email}</div>
                       </div>
-                    </div>
-                  </td>
-                  <td className="px-6 py-3 align-top">
-                    <p className="text-xs text-gray-500 mb-1">
-                      Kommagetrennt (z. B. <span className="font-mono">Chris</span>) — wird zur E-Mail dieses Users
-                      aufgelöst.
-                    </p>
-                    <div className="flex flex-wrap items-center gap-2">
-                      <input
-                        type="text"
-                        value={aliasDraftByEmail[userProfile.email] ?? ''}
-                        onChange={(e) =>
-                          setAliasDraftByEmail((prev) => ({
-                            ...prev,
-                            [userProfile.email]: e.target.value,
-                          }))
-                        }
-                        className="min-w-[10rem] flex-1 rounded border border-gray-300 px-2 py-1 text-sm"
-                        placeholder="Chris, CS"
-                        disabled={updating === userProfile.email}
-                      />
-                      <button
-                        type="button"
-                        onClick={() => void handleSaveAliases(userProfile.email)}
-                        disabled={updating === userProfile.email}
-                        className="shrink-0 rounded bg-blue-600 px-2 py-1 text-xs font-medium text-white hover:bg-blue-700 disabled:opacity-50"
+                    </td>
+                    <td className="px-6 py-4 whitespace-nowrap">
+                      <select
+                        value={user.role}
+                        onChange={(e) => handleUpdateUser(user.id, { role: e.target.value as UserRole })}
+                        className={`text-sm px-2 py-1 rounded border ${getRoleColor(user.role)}`}
                       >
-                        Save
-                      </button>
-                    </div>
-                  </td>
-                  <td className="px-6 py-4 whitespace-nowrap">
-                    <label className="sr-only" htmlFor={`role-${userProfile.email}`}>
-                      Role for {userProfile.email}
-                    </label>
-                    <select
-                      id={`role-${userProfile.email}`}
-                      value={userProfile.role}
-                      onChange={(e) => void handleRoleChange(userProfile.email, e.target.value as UserRole)}
-                      disabled={updating === userProfile.email}
-                      className="mt-0.5 block max-w-[11rem] rounded-md border border-gray-300 bg-white py-1.5 pl-2 pr-8 text-sm font-medium text-gray-900 focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500 disabled:cursor-not-allowed disabled:opacity-50"
-                    >
-                      <option value="agent">{userRoleLabel('agent')}</option>
-                      <option value="team_lead">{userRoleLabel('team_lead')}</option>
-                      <option value="legal">{userRoleLabel('legal')}</option>
-                      <option value="admin">{userRoleLabel('admin')}</option>
-                    </select>
-                  </td>
-                  <td className="px-6 py-4 whitespace-nowrap">
-                    <span className="px-2 py-1 text-xs font-semibold rounded-full bg-green-100 text-green-800">
-                      Active
-                    </span>
-                  </td>
-                  <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                    {userProfile.lastLoginAt
-                      ? new Date(userProfile.lastLoginAt).toLocaleDateString('de-DE', {
-                          year: 'numeric',
-                          month: 'short',
-                          day: 'numeric',
-                          hour: '2-digit',
-                          minute: '2-digit',
-                        })
-                      : 'N/A'}
-                  </td>
-                  <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                    <span className="text-gray-400">—</span>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+                        {TEAM_ROLES.map(role => (
+                          <option key={role.value} value={role.value}>{role.label}</option>
+                        ))}
+                      </select>
+                    </td>
+                    <td className="px-6 py-4 whitespace-nowrap">
+                      <div className="flex items-center">
+                        <input
+                          type="checkbox"
+                          checked={user.isActive}
+                          onChange={(e) => handleToggleActive(user.id, e.target.checked)}
+                          className="h-4 w-4 text-blue-600 border-gray-300 rounded focus:ring-blue-500"
+                        />
+                        <span className={`ml-2 text-sm ${user.isActive ? 'text-green-600' : 'text-red-600'}`}>
+                          {user.isActive ? 'Active' : 'Inactive'}
+                        </span>
+                      </div>
+                    </td>
+                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                      {user.lastLoginAt ? (
+                        <>
+                          <div>{user.lastLoginAt.toLocaleDateString()}</div>
+                          <div className="text-xs">{user.lastLoginAt.toLocaleTimeString()}</div>
+                        </>
+                      ) : (
+                        <span className="text-yellow-600 font-medium">Never logged in</span>
+                      )}
+                    </td>
+                    <td className="px-6 py-4 whitespace-nowrap text-sm font-medium">
+                      <div className="flex items-center gap-2">
+                        <button
+                          onClick={() => setEditingUser(user)}
+                          className="text-blue-600 hover:text-blue-900 px-2 py-1 rounded border border-blue-300 hover:bg-blue-50"
+                          title="Edit user details"
+                        >
+                          ✏️ Edit
+                        </button>
+                        <button
+                          onClick={() => handleToggleActive(user.id, !user.isActive)}
+                          className={`px-2 py-1 rounded border ${
+                            user.isActive 
+                              ? 'text-orange-600 hover:text-orange-900 border-orange-300 hover:bg-orange-50' 
+                              : 'text-green-600 hover:text-green-900 border-green-300 hover:bg-green-50'
+                          }`}
+                          title={user.isActive ? 'Deactivate user' : 'Activate user'}
+                        >
+                          {user.isActive ? '⏸️ Deactivate' : '▶️ Activate'}
+                        </button>
+                        <button
+                          onClick={() => handleDeleteUser(user.id, user.displayName)}
+                          className="text-red-600 hover:text-red-900 px-2 py-1 rounded border border-red-300 hover:bg-red-50"
+                          title="Permanently delete user"
+                        >
+                          🗑️ Delete
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+                {users.length === 0 && (
+                  <tr>
+                    <td colSpan={5} className="px-6 py-12 text-center text-gray-500">
+                      <div className="text-lg mb-2">No team members configured yet</div>
+                      <div className="text-sm">Click "Add Team Member" to set up your GDPR team</div>
+                    </td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
         </div>
 
-        {/* Stats */}
-        <div className="mt-6 grid grid-cols-3 gap-4">
-          <div className="bg-white rounded-lg border border-gray-200 p-4">
-            <div className="text-sm text-gray-600">Total Users</div>
-            <div className="text-2xl font-bold text-gray-900">{users.length}</div>
-          </div>
-          <div className="bg-white rounded-lg border border-gray-200 p-4">
-            <div className="text-sm text-gray-600">Admins</div>
-            <div className="text-2xl font-bold text-orange-600">
-              {users.filter(u => u.role === 'admin').length}
-            </div>
-          </div>
-          <div className="bg-white rounded-lg border border-gray-200 p-4">
-            <div className="text-sm text-gray-600">Active Users</div>
-            <div className="text-2xl font-bold text-green-600">
-              {users.filter(u => u.isActive).length}
-            </div>
-          </div>
-        </div>
-
-        {/* Add User Modal */}
-        {showAddUserModal && (
+        {/* Create User Modal */}
+        {showCreateModal && (
           <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-            <div className="bg-white rounded-xl shadow-xl p-6 max-w-md w-full mx-4">
-              <h2 className="text-2xl font-bold text-gray-900 mb-4">Add New User</h2>
-              
+            <div className="bg-white rounded-lg p-6 max-w-md w-full mx-4">
+              <h3 className="text-lg font-bold text-gray-900 mb-4">Add New Team Member</h3>
               <div className="space-y-4">
                 <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">
+                  <label className="block text-sm font-medium text-gray-700 mb-2">
                     Email Address *
                   </label>
                   <input
                     type="email"
-                    value={newUserEmail}
-                    onChange={(e) => setNewUserEmail(e.target.value)}
-                    placeholder="user@hellofresh.com"
-                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
-                    disabled={addingUser}
+                    value={newUserData.email}
+                    onChange={(e) => setNewUserData(prev => ({ ...prev, email: e.target.value }))}
+                    className="w-full border border-gray-300 rounded-lg px-3 py-2"
+                    placeholder="vorname.nachname@hellofresh.de"
                   />
+                  <p className="text-xs text-gray-500 mt-1">
+                    This person can log in with their HelloFresh Google account once configured
+                  </p>
                 </div>
-
                 <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">
-                    Display Name (optional)
+                  <label className="block text-sm font-medium text-gray-700 mb-2">
+                    Display Name
                   </label>
                   <input
                     type="text"
-                    value={newUserDisplayName}
-                    onChange={(e) => setNewUserDisplayName(e.target.value)}
-                    placeholder="John Doe"
-                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
-                    disabled={addingUser}
+                    value={newUserData.displayName}
+                    onChange={(e) => setNewUserData(prev => ({ ...prev, displayName: e.target.value }))}
+                    className="w-full border border-gray-300 rounded-lg px-3 py-2"
+                    placeholder="Vorname Nachname"
                   />
                 </div>
-
                 <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">
-                    Role *
+                  <label className="block text-sm font-medium text-gray-700 mb-2">
+                    Team Role *
                   </label>
                   <select
-                    value={newUserRole}
-                    onChange={(e) => setNewUserRole(e.target.value as UserRole)}
-                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
-                    disabled={addingUser}
+                    value={newUserData.role}
+                    onChange={(e) => setNewUserData(prev => ({ ...prev, role: e.target.value as UserRole }))}
+                    className="w-full border border-gray-300 rounded-lg px-3 py-2"
                   >
-                    <option value="agent">{userRoleLabel('agent')}</option>
-                    <option value="team_lead">{userRoleLabel('team_lead')}</option>
-                    <option value="legal">{userRoleLabel('legal')}</option>
-                    <option value="admin">{userRoleLabel('admin')}</option>
+                    {TEAM_ROLES.map(role => (
+                      <option key={role.value} value={role.value}>
+                        {role.label} - {role.description}
+                      </option>
+                    ))}
                   </select>
                 </div>
-              </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-2">
+                    Department
+                  </label>
+                  <select
+                    value={newUserData.department}
+                    onChange={(e) => setNewUserData(prev => ({ ...prev, department: e.target.value }))}
+                    className="w-full border border-gray-300 rounded-lg px-3 py-2"
+                  >
+                    <option value="">Select department...</option>
+                    {DEPARTMENTS.map(dept => (
+                      <option key={dept} value={dept}>{dept}</option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-2">
+                    Market Assignment
+                  </label>
+                  <select
+                    value={newUserData.market}
+                    onChange={(e) => setNewUserData(prev => ({ ...prev, market: e.target.value }))}
+                    className="w-full border border-gray-300 rounded-lg px-3 py-2"
+                  >
+                    <option value="">Select market...</option>
+                    {MARKETS.map(market => (
+                      <option key={market} value={market}>{market}</option>
+                    ))}
+                  </select>
+                </div>
 
-              <div className="flex gap-3 mt-6">
+                <div className="bg-blue-50 border border-blue-200 rounded-lg p-3">
+                  <h4 className="font-medium text-blue-900 mb-1">Pre-Login Configuration</h4>
+                  <p className="text-sm text-blue-800">
+                    ✅ User profile will be created immediately<br/>
+                    ✅ When they log in, they'll get the correct role automatically<br/>
+                    ✅ Ready for onboarding assignment
+                  </p>
+                </div>
+
+                <div className="flex gap-3 justify-end">
+                  <button
+                    onClick={() => {
+                      setShowCreateModal(false);
+                      setNewUserData({ email: '', displayName: '', role: 'agent', department: '', market: '' });
+                    }}
+                    className="px-4 py-2 text-gray-700 bg-gray-100 rounded-lg hover:bg-gray-200"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    onClick={handleCreateUser}
+                    disabled={!newUserData.email}
+                    className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50"
+                  >
+                    Add Team Member
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Edit User Modal */}
+        {editingUser && (
+          <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+            <div className="bg-white rounded-lg p-6 max-w-md w-full mx-4">
+              <h3 className="text-lg font-bold text-gray-900 mb-4">Edit User: {editingUser.displayName || editingUser.email}</h3>
+              <div className="space-y-4">
+                <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
+                  <h4 className="font-medium text-blue-900 mb-2">Current User Details</h4>
+                  <div className="text-sm text-blue-800 space-y-1">
+                    <div><strong>Email:</strong> {editingUser.email}</div>
+                    <div><strong>Role:</strong> {editingUser.role}</div>
+                    <div><strong>Status:</strong> {editingUser.isActive ? 'Active' : 'Inactive'}</div>
+                    <div><strong>Last Login:</strong> {editingUser.lastLoginAt ? editingUser.lastLoginAt.toLocaleString() : 'Never'}</div>
+                  </div>
+                </div>
+                
+                <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-4">
+                  <h4 className="font-medium text-yellow-900 mb-2">Available Actions</h4>
+                  <div className="text-sm text-yellow-800 space-y-2">
+                    <div>• <strong>Change Role:</strong> Use the dropdown in the main table</div>
+                    <div>• <strong>Toggle Status:</strong> Use Activate/Deactivate buttons</div>
+                    <div>• <strong>Delete User:</strong> Use the Delete button (permanent)</div>
+                  </div>
+                </div>
+                
+                <div className="text-sm text-gray-600">
+                  <strong>Note:</strong> Advanced editing features (display name, department, market) 
+                  will be added in a future update. For now, use the inline controls in the table.
+                </div>
+              </div>
+              
+              <div className="flex gap-3 justify-end mt-6">
                 <button
-                  onClick={handleAddUser}
-                  disabled={addingUser || !newUserEmail}
-                  className="flex-1 px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 disabled:opacity-50 disabled:cursor-not-allowed font-medium"
+                  onClick={() => setEditingUser(null)}
+                  className="px-4 py-2 text-gray-700 bg-gray-100 rounded-lg hover:bg-gray-200"
                 >
-                  {addingUser ? 'Adding...' : 'Add User'}
-                </button>
-                <button
-                  onClick={() => {
-                    setShowAddUserModal(false);
-                    setNewUserEmail('');
-                    setNewUserRole('agent');
-                    setNewUserDisplayName('');
-                  }}
-                  disabled={addingUser}
-                  className="px-4 py-2 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300 disabled:opacity-50 font-medium"
-                >
-                  Cancel
+                  Close
                 </button>
               </div>
             </div>

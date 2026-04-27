@@ -4,6 +4,7 @@ import { AuthProvider } from "@/lib/contexts/AuthContext";
 import { ToastProvider } from "@/lib/contexts/ToastContext";
 import { Navigation } from "@/components/Navigation";
 import { AuthGuard } from "@/components/AuthGuard";
+import { GlobalUserSwitcher } from "@/components/GlobalUserSwitcher";
 
 export const metadata: Metadata = {
   title: "GDPR Assistant",
@@ -28,6 +29,7 @@ export default function RootLayout({
             <AuthGuard>
               <Navigation />
               {children}
+              <GlobalUserSwitcher />
             </AuthGuard>
           </AuthProvider>
         </ToastProvider>

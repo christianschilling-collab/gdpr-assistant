@@ -7,11 +7,12 @@ import Image from 'next/image';
 import { useAuth } from '@/lib/contexts/AuthContext';
 import { formatRecentCaseTime } from '@/lib/utils/recentCases';
 import { OnboardingBanner } from './OnboardingBanner';
+import { UserSwitcher } from './UserSwitcher';
 import { isGdprAssistantAdminEmail } from '@/lib/auth/gdprAssistantAdmins';
 
 export function Navigation() {
   const pathname = usePathname();
-  const { user, isAdmin, userProfile, userRole } = useAuth();
+  const { user, isAdmin, userProfile, userRole, isImpersonating, originalUser } = useAuth();
   const [recentCases, setRecentCases] = useState<Array<{ id: string; caseId: string; title: string }>>([]);
   const [navMenuOpen, setNavMenuOpen] = useState(false);
 
@@ -42,7 +43,26 @@ export function Navigation() {
 
   // TEMPORARY FALLBACK: Check email directly if Firestore profile not loaded yet
   const isAdminByEmail = user?.email && isGdprAssistantAdminEmail(user.email);
-  const hasAdminAccess = isAdmin || isAdminByEmail;
+  
+  // Use current profile role - this handles impersonation correctly
+  const currentUserRole = userProfile?.role || 'agent';
+  const isAgentRole = currentUserRole === 'agent';
+  
+  // Admin access should be based ONLY on the current user role when impersonating
+  // If impersonating, only use currentUserRole. If not impersonating, can use original permissions too
+  const hasAdminAccess = isImpersonating ? 
+    currentUserRole === 'admin' || currentUserRole === 'legal' :
+    (currentUserRole === 'admin' || currentUserRole === 'legal' || isAdmin || isAdminByEmail);
+  
+  // Debug role detection
+  console.log('🔍 Role Debug:', {
+    currentUserRole,
+    isAgentRole,
+    hasAdminAccess,
+    isImpersonating,
+    userProfile: userProfile?.email,
+    originalFirebaseUser: user?.email
+  });
 
   const isAdminPage = pathname?.startsWith('/admin');
   const isBoardPage = pathname === '/board';
@@ -79,6 +99,18 @@ export function Navigation() {
 
   return (
     <>
+      {/* Impersonation Banner */}
+      {isImpersonating && (
+        <div className="bg-yellow-400 text-yellow-900 px-4 py-2 text-center text-sm font-medium">
+          🔄 <strong>Testing Mode:</strong> You are viewing as {userProfile?.displayName || userProfile?.email} ({userProfile?.role})
+          {originalUser && (
+            <span className="ml-2">
+              • Original: {originalUser.displayName || originalUser.email}
+            </span>
+          )}
+        </div>
+      )}
+      
       <nav className={`relative z-50 border-b shadow-sm ${navBg}`}>
         {navMenuOpen ? (
           <button
@@ -133,32 +165,20 @@ export function Navigation() {
               </span>
             </Link>
             <div className="ml-0.5 hidden min-w-0 flex-1 flex-wrap items-center gap-x-2 gap-y-1.5 py-1 lg:flex">
-                     <Link
-                       href="/board"
-                       className={`shrink-0 px-2.5 py-2 rounded-md text-xs font-medium flex items-center gap-1 whitespace-nowrap ${
-                         isBoardPage
-                           ? `${boardActiveBg} ${boardActiveText}`
-                           : `${textColor} ${hoverBg}`
-                       }`}
-                     >
-                       <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 17V7m0 10a2 2 0 01-2 2H5a2 2 0 01-2-2V7a2 2 0 012-2h2a2 2 0 012 2m0 10a2 2 0 002 2h2a2 2 0 002-2M9 7a2 2 0 012-2h2a2 2 0 012 2m0 0v10a2 2 0 002 2h2a2 2 0 002-2V7a2 2 0 00-2-2h-2a2 2 0 00-2 2z" />
-                       </svg>
-                       Board
-                     </Link>
+                     {/* Primary Work Section - Prioritized for Agents */}
                      <div
                        className={`flex shrink-0 items-stretch gap-0.5 rounded-lg border p-0.5 ${
                          isBoardPage ? 'border-gray-700 bg-[#0d1420]/90' : 'border-gray-200 bg-gray-100'
                        }`}
                        role="group"
-                       aria-label="Work"
+                       aria-label="Daily Work"
                      >
                        <span
-                         className={`hidden 2xl:flex items-center px-1.5 text-[10px] font-bold uppercase tracking-wide ${
+                         className={`hidden xl:flex items-center px-1.5 text-[10px] font-bold uppercase tracking-wide ${
                            isBoardPage ? 'text-gray-500' : 'text-gray-400'
                          }`}
                        >
-                         Work
+                         Daily Work
                        </span>
                        <Link
                          href="/cases"
@@ -188,32 +208,25 @@ export function Navigation() {
                          Incidents
                        </Link>
                      </div>
-                     <Link
-                       href="/reporting"
-                       className={`shrink-0 px-2.5 py-2 rounded-md text-xs font-medium flex items-center gap-1 whitespace-nowrap ${
-                         pathname?.startsWith('/reporting') && !pathname?.startsWith('/reporting/submit')
-                           ? `${activeBg} ${activeText}`
-                           : `${textColor} ${hoverBg}`
-                       }`}
-                     >
-                       <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
-                       </svg>
-                       Reporting
-                     </Link>
-                     <Link
-                       href="/reporting/submit"
-                       className={`shrink-0 px-2.5 py-2 rounded-md text-xs font-medium flex items-center gap-1 whitespace-nowrap ${
-                         pathname?.startsWith('/reporting/submit')
-                           ? `${activeBg} ${activeText}`
-                           : `${textColor} ${hoverBg}`
-                       }`}
-                     >
-                       <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
-                       </svg>
-                       Submit week
-                     </Link>
+                     
+                     {/* Board - Only for Team Lead, Legal, Admin */}
+                     {!isAgentRole && (
+                       <Link
+                         href="/board"
+                         className={`shrink-0 px-2.5 py-2 rounded-md text-xs font-medium flex items-center gap-1 whitespace-nowrap ${
+                           isBoardPage
+                             ? `${boardActiveBg} ${boardActiveText}`
+                             : `${textColor} ${hoverBg}`
+                         }`}
+                       >
+                         <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 17V7m0 10a2 2 0 01-2 2H5a2 2 0 01-2-2V7a2 2 0 012-2h2a2 2 0 012 2m0 10a2 2 0 002 2h2a2 2 0 002-2M9 7a2 2 0 012-2h2a2 2 0 012 2m0 0v10a2 2 0 002 2h2a2 2 0 002-2V7a2 2 0 00-2-2h-2a2 2 0 00-2 2z" />
+                         </svg>
+                         Board
+                       </Link>
+                     )}
+
+                     {/* Agent Tools */}
                      <Link
                        href="/agent-daily-log"
                        className={`shrink-0 px-2.5 py-2 rounded-md text-xs font-medium flex items-center gap-1 whitespace-nowrap ${
@@ -225,24 +238,77 @@ export function Navigation() {
                        <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4" />
                        </svg>
-                       Daily log
+                       Daily Log
                      </Link>
-              {hasAdminAccess && (
-                      <Link
-                        href="/admin"
-                        className={`shrink-0 px-2.5 py-2 rounded-md text-xs font-medium flex items-center gap-1 whitespace-nowrap ${
-                          isAdminPage
-                            ? 'bg-gray-100 text-gray-900'
-                            : `${textColor} ${hoverBg}`
-                        }`}
-                      >
-                        <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
-                        </svg>
-                        Admin
-                      </Link>
-              )}
+
+                     {/* Learning & Development */}
+                     <Link
+                       href="/onboarding"
+                       className={`shrink-0 px-2.5 py-2 rounded-md text-xs font-medium flex items-center gap-1 whitespace-nowrap ${
+                         pathname?.startsWith('/onboarding')
+                           ? `${activeBg} ${activeText}`
+                           : `${textColor} ${hoverBg}`
+                       }`}
+                     >
+                       <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.747 0 3.332.477 4.5 1.253v13C19.832 18.477 18.247 18 16.5 18c-1.746 0-3.332.477-4.5 1.253" />
+                       </svg>
+                       Training
+                     </Link>
+
+                     {/* Reporting Section - For Team Leads and Admin */}
+                     {(currentUserRole === 'team_lead' || currentUserRole === 'legal' || hasAdminAccess) && (
+                       <>
+                         <div className={`h-6 w-px ${isBoardPage ? 'bg-gray-700' : 'bg-gray-300'}`}></div>
+                         <Link
+                           href="/reporting"
+                           className={`shrink-0 px-2.5 py-2 rounded-md text-xs font-medium flex items-center gap-1 whitespace-nowrap ${
+                             pathname?.startsWith('/reporting') && !pathname?.startsWith('/reporting/submit')
+                               ? `${activeBg} ${activeText}`
+                               : `${textColor} ${hoverBg}`
+                           }`}
+                         >
+                           <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
+                           </svg>
+                           Reports
+                         </Link>
+                         <Link
+                           href="/reporting/submit"
+                           className={`shrink-0 px-2.5 py-2 rounded-md text-xs font-medium flex items-center gap-1 whitespace-nowrap ${
+                             pathname?.startsWith('/reporting/submit')
+                               ? `${activeBg} ${activeText}`
+                               : `${textColor} ${hoverBg}`
+                           }`}
+                         >
+                           <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+                           </svg>
+                           Submit Week
+                         </Link>
+                       </>
+                     )}
+
+                     {/* Admin Access - Only for actual Admin users and originalUser in impersonation mode */}
+                     {(hasAdminAccess && (!isImpersonating || originalUser?.role === 'admin')) && (
+                       <>
+                         <div className={`h-6 w-px ${isBoardPage ? 'bg-gray-700' : 'bg-gray-300'}`}></div>
+                         <Link
+                           href="/admin"
+                           className={`shrink-0 px-2.5 py-2 rounded-md text-xs font-medium flex items-center gap-1 whitespace-nowrap ${
+                             isAdminPage
+                               ? 'bg-gray-100 text-gray-900'
+                               : `${textColor} ${hoverBg}`
+                           }`}
+                         >
+                           <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
+                             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                           </svg>
+                           Admin
+                         </Link>
+                       </>
+                     )}
             </div>
             <button
               type="button"
@@ -308,6 +374,7 @@ export function Navigation() {
                 >
                   {user.email}
                 </div>
+                <UserSwitcher />
                 <button
                   onClick={async () => {
                     const { signOutUser } = await import('@/lib/firebase/auth');
@@ -332,15 +399,7 @@ export function Navigation() {
           >
             <div className="max-h-[min(70vh,28rem)] overflow-y-auto px-4 py-3">
               <div className="flex flex-col gap-1">
-                <Link
-                  href="/board"
-                  onClick={() => setNavMenuOpen(false)}
-                  className={`rounded-lg px-3 py-2.5 text-sm font-medium ${
-                    isBoardPage ? `${boardActiveBg} ${boardActiveText}` : `${textColor} ${hoverBg}`
-                  }`}
-                >
-                  Board
-                </Link>
+                {/* Daily Work Section - Priority for Agents */}
                 <div
                   className={`rounded-lg border p-2 ${
                     isBoardPage ? 'border-gray-700 bg-[#0d1420]' : 'border-gray-200 bg-gray-50'
@@ -351,7 +410,7 @@ export function Navigation() {
                       isBoardPage ? 'text-gray-500' : 'text-gray-400'
                     }`}
                   >
-                    Work
+                    Daily Work
                   </p>
                   <div className="flex flex-col gap-0.5">
                     <Link
@@ -377,28 +436,21 @@ export function Navigation() {
                     </Link>
                   </div>
                 </div>
-                <Link
-                  href="/reporting"
-                  onClick={() => setNavMenuOpen(false)}
-                  className={`rounded-lg px-3 py-2.5 text-sm font-medium ${
-                    pathname?.startsWith('/reporting') && !pathname?.startsWith('/reporting/submit')
-                      ? `${activeBg} ${activeText}`
-                      : `${textColor} ${hoverBg}`
-                  }`}
-                >
-                  Reporting
-                </Link>
-                <Link
-                  href="/reporting/submit"
-                  onClick={() => setNavMenuOpen(false)}
-                  className={`rounded-lg px-3 py-2.5 text-sm font-medium ${
-                    pathname?.startsWith('/reporting/submit')
-                      ? `${activeBg} ${activeText}`
-                      : `${textColor} ${hoverBg}`
-                  }`}
-                >
-                  Submit week
-                </Link>
+
+                {/* Board - Only for non-agents */}
+                {!isAgentRole && (
+                  <Link
+                    href="/board"
+                    onClick={() => setNavMenuOpen(false)}
+                    className={`rounded-lg px-3 py-2.5 text-sm font-medium ${
+                      isBoardPage ? `${boardActiveBg} ${boardActiveText}` : `${textColor} ${hoverBg}`
+                    }`}
+                  >
+                    Board
+                  </Link>
+                )}
+
+                {/* Agent Tools */}
                 <Link
                   href="/agent-daily-log"
                   onClick={() => setNavMenuOpen(false)}
@@ -408,9 +460,52 @@ export function Navigation() {
                       : `${textColor} ${hoverBg}`
                   }`}
                 >
-                  Daily log
+                  Daily Log
                 </Link>
-                {hasAdminAccess ? (
+
+                {/* Training */}
+                <Link
+                  href="/onboarding"
+                  onClick={() => setNavMenuOpen(false)}
+                  className={`rounded-lg px-3 py-2.5 text-sm font-medium ${
+                    pathname?.startsWith('/onboarding')
+                      ? `${activeBg} ${activeText}`
+                      : `${textColor} ${hoverBg}`
+                  }`}
+                >
+                  Training
+                </Link>
+
+                {/* Reporting - Only for Team Leads and Admin */}
+                {(currentUserRole === 'team_lead' || currentUserRole === 'legal' || hasAdminAccess) && (
+                  <>
+                    <Link
+                      href="/reporting"
+                      onClick={() => setNavMenuOpen(false)}
+                      className={`rounded-lg px-3 py-2.5 text-sm font-medium ${
+                        pathname?.startsWith('/reporting') && !pathname?.startsWith('/reporting/submit')
+                          ? `${activeBg} ${activeText}`
+                          : `${textColor} ${hoverBg}`
+                      }`}
+                    >
+                      Reports
+                    </Link>
+                    <Link
+                      href="/reporting/submit"
+                      onClick={() => setNavMenuOpen(false)}
+                      className={`rounded-lg px-3 py-2.5 text-sm font-medium ${
+                        pathname?.startsWith('/reporting/submit')
+                          ? `${activeBg} ${activeText}`
+                          : `${textColor} ${hoverBg}`
+                      }`}
+                    >
+                      Submit Week
+                    </Link>
+                  </>
+                )}
+
+                {/* Admin - Only for real admins, not impersonated agents */}
+                {(hasAdminAccess && (!isImpersonating || originalUser?.role === 'admin')) && (
                   <Link
                     href="/admin"
                     onClick={() => setNavMenuOpen(false)}
@@ -424,7 +519,7 @@ export function Navigation() {
                   >
                     Admin
                   </Link>
-                ) : null}
+                )}
               </div>
             </div>
           </div>

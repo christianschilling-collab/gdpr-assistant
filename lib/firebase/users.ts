@@ -1,5 +1,5 @@
-import { getDb } from './config';
-import { collection, doc, getDoc, setDoc, updateDoc, getDocs, query, where, limit, Timestamp } from 'firebase/firestore';
+import { getDbOrThrow } from './config';
+import { collection, doc, getDoc, setDoc, updateDoc, deleteDoc, getDocs, query, where, limit, Timestamp } from 'firebase/firestore';
 
 const USERS_COLLECTION = 'users';
 
@@ -48,8 +48,7 @@ function normalizeAssigneeAliasesField(raw: unknown): string[] | undefined {
 
 // Get user profile by email
 export async function getUserProfile(email: string): Promise<UserProfile | null> {
-  const db = getDb();
-  if (!db) throw new Error('Firebase not initialized');
+  const db = getDbOrThrow();
 
   try {
     const docRef = doc(db, USERS_COLLECTION, email);
@@ -77,13 +76,13 @@ export async function getUserProfile(email: string): Promise<UserProfile | null>
   }
 }
 
-// Create or update user profile on login
+// Create or update user profile (ADMIN: Pre-configure users before login)
 export async function createOrUpdateUserProfile(
   email: string,
-  displayName?: string
+  displayName?: string,
+  role?: UserRole
 ): Promise<UserProfile> {
-  const db = getDb();
-  if (!db) throw new Error('Firebase not initialized');
+  const db = getDbOrThrow();
 
   try {
     const docRef = doc(db, USERS_COLLECTION, email);
@@ -93,22 +92,29 @@ export async function createOrUpdateUserProfile(
 
     if (docSnap.exists()) {
       // Update existing user
-      await updateDoc(docRef, {
-        lastLoginAt: now,
+      const updateData: any = {
         updatedAt: now,
         ...(displayName && { displayName }),
-      });
-
+        ...(role && { role })
+      };
+      
+      // Only update lastLoginAt if user is actually logging in (no role provided)
+      if (!role) {
+        updateData.lastLoginAt = now;
+      }
+      
+      await updateDoc(docRef, updateData);
       return getUserProfile(email) as Promise<UserProfile>;
     } else {
-      // Create new user with default 'agent' role
+      // Create new user
       const newUser: Omit<UserProfile, 'id'> = {
         email,
-        role: 'agent',
+        role: role || 'agent',
         displayName,
         createdAt: now.toDate(),
-        lastLoginAt: now.toDate(),
         isActive: true,
+        // Only set lastLoginAt if this is an actual login (no role specified)
+        ...(role ? {} : { lastLoginAt: now.toDate() })
       };
 
       await setDoc(docRef, {
@@ -116,7 +122,7 @@ export async function createOrUpdateUserProfile(
         role: newUser.role,
         displayName: newUser.displayName || null,
         createdAt: now,
-        lastLoginAt: now,
+        lastLoginAt: newUser.lastLoginAt ? now : null,
         isActive: newUser.isActive,
       });
 
@@ -143,8 +149,7 @@ export async function updateUserAssigneeAliases(email: string, aliases: string[]
 
 // Update user role (admin only)
 export async function updateUserRole(email: string, role: UserRole): Promise<void> {
-  const db = getDb();
-  if (!db) throw new Error('Firebase not initialized');
+  const db = getDbOrThrow();
 
   try {
     const docRef = doc(db, USERS_COLLECTION, email);
@@ -160,8 +165,7 @@ export async function updateUserRole(email: string, role: UserRole): Promise<voi
 
 // Get all users (admin only)
 export async function getAllUsers(): Promise<UserProfile[]> {
-  const db = getDb();
-  if (!db) throw new Error('Firebase not initialized');
+  const db = getDbOrThrow();
 
   try {
     const q = query(collection(db, USERS_COLLECTION), limit(500));
@@ -194,8 +198,7 @@ export async function isUserAdmin(email: string): Promise<boolean> {
 
 // Deactivate user (admin only)
 export async function deactivateUser(email: string): Promise<void> {
-  const db = getDb();
-  if (!db) throw new Error('Firebase not initialized');
+  const db = getDbOrThrow();
 
   try {
     const docRef = doc(db, USERS_COLLECTION, email);
@@ -211,8 +214,7 @@ export async function deactivateUser(email: string): Promise<void> {
 
 // Activate user (admin only)
 export async function activateUser(email: string): Promise<void> {
-  const db = getDb();
-  if (!db) throw new Error('Firebase not initialized');
+  const db = getDbOrThrow();
 
   try {
     const docRef = doc(db, USERS_COLLECTION, email);
@@ -222,6 +224,21 @@ export async function activateUser(email: string): Promise<void> {
     });
   } catch (error) {
     console.error('Error activating user:', error);
+    throw error;
+  }
+}
+
+/**
+ * Delete a user profile (ADMIN ONLY)
+ */
+export async function deleteUserProfile(email: string): Promise<void> {
+  const db = getDbOrThrow();
+
+  try {
+    const docRef = doc(db, USERS_COLLECTION, email);
+    await deleteDoc(docRef);
+  } catch (error) {
+    console.error('Error deleting user:', error);
     throw error;
   }
 }

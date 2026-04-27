@@ -347,6 +347,42 @@ service cloud.firestore {
       allow read, write: if gdprSignedIn();
     }
 
+    // ============================================
+    // ONBOARDING & TRAINING SYSTEM (NEW)
+    // ============================================
+    
+    match /onboardingStatus/{id} {
+      allow read, write: if gdprSignedIn();
+    }
+
+    match /trainingModules/{id} {
+      allow read, write: if gdprSignedIn();
+    }
+
+    match /trainingProgress/{id} {
+      allow read, write: if gdprSignedIn();
+    }
+
+    match /certifications/{id} {
+      allow read, write: if gdprSignedIn();
+    }
+
+    match /onboardingPlans/{id} {
+      allow read, write: if gdprSignedIn();
+    }
+
+    match /gdprSystemConfigs/{id} {
+      allow read, write: if gdprSignedIn();
+    }
+
+    match /trainingContent/{id} {
+      allow read, write: if gdprSignedIn();
+    }
+
+    match /contentTemplates/{id} {
+      allow read, write: if gdprSignedIn();
+    }
+
     // GDPR "clusters" (org structure) — not aitrailblazers_clusters
     match /clusters/{clusterId} {
       allow read, write: if gdprSignedIn();

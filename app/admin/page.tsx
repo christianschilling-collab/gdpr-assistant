@@ -252,6 +252,62 @@ export default function AdminDashboardPage() {
       href: '/admin/task-templates',
       color: 'orange',
     },
+    {
+      title: 'System Access Tracker',
+      description: 'Track onboarding progress and system access requests for new team members',
+      icon: 'identification',
+      href: '/admin/onboarding/access-tracker',
+      color: 'green',
+    },
+    {
+      title: 'Classification Decision Tree',
+      description: 'Interactive GDPR request classification training tool',
+      icon: 'workflow',
+      href: '/admin/onboarding/classification-tree',
+      color: 'blue',
+    },
+    {
+      title: 'Queue Processing Dashboard',
+      description: 'Daily GDPR queue management and processing checklist',
+      icon: 'clipboard',
+      href: '/admin/onboarding/queue-dashboard',
+      color: 'purple',
+    },
+    {
+      title: 'Escalation Assistant',
+      description: 'POC directory and escalation decision support system',
+      icon: 'exclamation',
+      href: '/admin/onboarding/escalation-assistant',
+      color: 'red',
+    },
+    {
+      title: 'Knowledge Testing',
+      description: 'GDPR proficiency testing and certification management',
+      icon: 'book',
+      href: '/admin/onboarding/certification',
+      color: 'indigo',
+    },
+    {
+      title: 'System Configuration',
+      description: 'Manage GDPR system access requirements and configurations for onboarding',
+      icon: 'cog',
+      href: '/admin/system-config',
+      color: 'gray',
+    },
+    {
+      title: 'Initialize Systems Database',
+      description: 'Seed the database with default GDPR system configurations (run once)',
+      icon: 'database',
+      href: '/admin/seed-systems',
+      color: 'green',
+    },
+    {
+      title: 'Training Content Management',
+      description: 'Manage interactive training materials and learning content',
+      icon: 'book',
+      href: '/admin/training-content',
+      color: 'blue',
+    },
   ];
 
   return (
